@@ -7420,6 +7420,76 @@ def refresh_seastate_endpoint(dummy=None):
     except Exception as e:
         return make_response(_j.dumps({"status": "error", "msg": str(e)})), 500
 
+@app.route('/diagnostics', methods=['GET'])
+@requires_auth
+def sys_diagnostics():
+    import subprocess, time, json as _hj
+    try:
+        with open('/proc/loadavg', 'r') as f:
+            load = f.read().split()[:3]
+    except: load = ["?", "?", "?"]
+        
+    try:
+        with open('/proc/meminfo', 'r') as f:
+            lines = f.readlines()
+        mem = {}
+        for line in lines:
+            parts = line.split(':')
+            if len(parts) == 2:
+                mem[parts[0].strip()] = int(parts[1].strip().split()[0])
+        total = mem.get("MemTotal", 1)
+        avail = mem.get("MemAvailable", mem.get("MemFree", 0))
+        used_pct = round(100.0 - ((avail / total) * 100.0), 1)
+        mem_str = f"{used_pct}% ({round((total-avail)/1024,1)}MB / {round(total/1024,1)}MB)"
+    except:
+        used_pct, mem_str = 0, "Unknown"
+
+    def _is_active(name):
+        try:
+            r = subprocess.run(['systemctl', 'is-active', name], capture_output=True, text=True)
+            return r.stdout.strip() == "active"
+        except: return False
+
+    services = {
+        "manta-proxy": _is_active("manta-proxy"),
+        "cmems-worker": _is_active("cmems-worker"),
+        "adsb-worker": _is_active("adsb-worker")
+    }
+
+    try:
+        r = subprocess.run(['pgrep', '-f', 'combined_mantasim2.py'], capture_output=True, text=True)
+        services["simulator"] = bool(r.stdout.strip())
+    except: services["simulator"] = False
+
+    def _c_age(path):
+        try:
+            if not os.path.exists(path): return {"age_s": 99999, "status": "missing"}
+            return {"age_s": int(time.time() - os.path.getmtime(path)), "status": "ok"}
+        except: return {"age_s": 99999, "status": "error"}
+
+    caches = {
+        "CMEMS": _c_age(os.path.join(B, "currents_grid_cache.json")),
+        "ADSB": _c_age(os.path.join(B, "adsb_cache.json")),
+        "OSINT": _c_age(os.path.join(B, "meteo_cache.json")),
+        "GEO": _c_age(os.path.join(B, "geo_cache.json"))
+    }
+    return jsonify({
+        "status": "ok", "cpu_load": load, "mem_pct": used_pct, "mem_str": mem_str,
+        "services": services, "caches": caches, "ts": time.time()
+    })
+
+@app.route('/restart_all', methods=['POST'])
+@requires_auth
+def restart_all_endpoint():
+    try:
+        import subprocess
+        # Give a short delay to allow HTTP response to return before killing proxy
+        script = 'sleep 1 && sudo /home/icanjumpuddles/manta-comms/restart_clean.sh'
+        subprocess.Popen(script, shell=True, start_new_session=True)
+        return jsonify({"status": "restarting"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/health')
 @app.route('/health/<path:dummy>')
 def health_endpoint(dummy=None):
