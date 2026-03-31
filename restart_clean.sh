@@ -20,7 +20,7 @@ echo "[1] Killing all project processes..."
 sudo systemctl stop manta-proxy 2>/dev/null && echo "  ✓ manta-proxy service stopped" || echo "  ~ manta-proxy not a systemd service"
 
 # Kill any direct python processes related to the project
-for pattern in "marine_map_gen" "proxy_v4" "cmems_worker" "manta_sim_headless" "server_monitor" "headless_sim" "hs.py" "combined_mantasim"; do
+for pattern in "marine_map_gen" "proxy_v4" "cmems_worker" "manta_sim_headless" "mantasim_headless" "server_monitor" "headless_sim" "hs.py" "combined_mantasim"; do
     if pkill -9 -f "$pattern" 2>/dev/null; then
         echo "  ✓ Killed: $pattern"
     fi
@@ -78,7 +78,7 @@ fi
 # ── 4. START THE HEADLESS SIM (if not via systemd) ──────────────────────────
 echo ""
 echo "[4] Starting headless sim..."
-SIM_SCRIPT="$HOME_DIR/manta_sim_headless.py"
+SIM_SCRIPT="$HOME_DIR/manta-comms/mantasim_headless.py"
 if [ -f "$SIM_SCRIPT" ]; then
     nohup python3 -u "$SIM_SCRIPT" >> "$BASE/headless_sim.log" 2>&1 &
     SIM_PID=$!

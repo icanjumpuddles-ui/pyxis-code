@@ -1,188 +1,45 @@
-# Pyxis Marine Tactical System — Architecture v4.1.1
+# PYXIS: Autonomous Tactical Intelligence & C3 System
 
-```mermaid
-graph TD
-    subgraph EXTERNAL_OSINT ["⬛ OSINT Data Sources"]
-        direction TB
-        GDELT["🌐 GDELT Project\nMaritime/Naval News\n(every 30 min)"]
-        FIRMS["🛰️ NASA FIRMS\nThermal / Fire Anomalies\n(every 30 min)"]
-        GDACS["🌀 GDACS API\nGlobal Disaster Alerts\nOrange/Red Events\n(every 10 min)"]
-        GMDSS["📡 NGA GMDSS\nNavigation Warnings\nBroadcast (every hr)"]
-        ASAM["☠️ NGA ASAM\nAnti-Shipping Activity\nPiracy Incidents (every hr)"]
-        NTM["📋 NGA MSI\nNotice to Mariners\n(every hr)"]
-    end
+You have architected a highly advanced, full-stack Command, Control, and Communications (C3) system designed for high-stakes maritime exploration. It bridges the gap between raw global telemetry, autonomous physical simulation, and contextual AI, ultimately delivering actionable intelligence directly to a Garmin smartwatch or a conversational voice interface.
 
-    subgraph EXTERNAL_SENSOR ["🌊 Marine & Environmental"]
-        direction TB
-        AIS["🚢 AISStream/OpenMarine\nLive AIS Vessel Contacts\n(WebSocket)"]
-        OSM["🗺️ OpenSeaMap / Overpass\nSeamarks, Shoals, Reefs\n(on vessel move > 5nm)"]
-        METEO["🌊 Open-Meteo Marine API\nWave Height/Dir/Period\nCurrent Velocity (30 min)"]
-        ETOPO["📊 ETOPO1 Bathymetry\nSeafloor Depth (30 min)"]
-        RAINV["🌧️ RainViewer API\nWeather Radar Tiles"]
-        NOAASWPC["☀️ NOAA SWPC\nPlanetary K-Index\nSpace Weather (every hr)"]
-        USGS["🌍 USGS\nEarthquake/Seismic Feed\n(every 15 min)"]
-    end
+The system is broken down into four major pillars:
 
-    subgraph EXTERNAL_GEO ["🌐 Geospatial Services"]
-        direction TB
-        SUNAPI["🌅 Sunrise-Sunset API\nLocal Sunrise/Sunset (30 min)"]
-        NOMINATIM["📍 OSM Nominatim\nReverse Geocoding (30 min)"]
-        CARTODBG["🗾 CartoDB Basemap\nMap Tile Rendering"]
-    end
+---
 
-    subgraph GARMIN ["⌚ Physical Sensor"]
-        WATCH_IN["Garmin Watch GPS/HR/Baro\nSensor Telemetry (push)"]
-        SIM["🚤 MantaSim / VanDeStadt\nYacht Physics Simulator\n(sim_telemetry.json)"]
-    end
+## 1. The Intelligence Fusion Hub (The VM Proxy)
+At the heart of the system is `proxy_v4.1.0_RADAR.py`, running as a highly-available `systemd` service on a Google Cloud Virtual Machine. This proxy acts as a universal data multiplexer. Instead of making synchronous, blocking API calls, the proxy relies on a suite of independent, asynchronous Python worker daemons:
 
-    subgraph PROXY ["🖥️ Pyxis Proxy Server v4.1.1 (Flask / Python)"]
-        direction TB
+*   **`cmems-worker`**: Autonomously downloads and caches high-resolution oceanographic data from the European Copernicus satellite network (CMEMS), tracking wave heights, sea surface temperatures, and ocean currents.
+*   **`adsb-worker`**: Cross-references OpenSky and ADS-B Exchange to track live aviation assets globally.
+*   **`geo_worker` / AIS**: Streams real-time global marine vessel traffic via AISStream.
+*   **OSINT & Thermal**: Scans NASA FIRMS for fire/explosion thermal anomalies and GDELT for breaking geopolitical warnings (e.g., piracy, missile strikes, military blockades).
 
-        subgraph WORKERS ["Background Worker Threads"]
-            W_OSINT["osint_worker\nGDELT + NASA FIRMS\n→ osint_cache.json"]
-            W_GDACS["osint_worker (GDACS)\n→ In-memory list"]
-            W_GMDSS["gmdss_worker\nGMDSS Broadcast\n→ gmdss_cache.json"]
-            W_ASAM["piracy_worker\nNGA ASAM\n→ asam_cache.json"]
-            W_NTM["msi_worker\nNGA NTM\n→ ntm_cache.json"]
-            W_OSM["osm_worker\nOpenSeaMap Hazards\n→ osm_cache (memory)"]
-            W_METEO["meteo_worker\nSea State + Depth\n→ meteo_cache.json"]
-            W_SWPC["space_weather_worker\nSolar K-Index\n→ swpc_cache.json"]
-            W_SEISMIC["seismic_worker\nUSGS Earthquakes\n→ seismic_cache.json"]
-            W_GEO["geo_worker\nReverse Geocode + Sun\n→ geo_cache.json"]
-        end
+The proxy fuses these heterogeneous data streams into a single JSON "State Vector" (`/status_api`), representing the absolute ground truth of the vessel's environment.
 
-        FUSION["📊 Data Fusion Engine\nstatus_api JSON Data Bus\n/status_api endpoint"]
+## 2. Advanced Conversational AI & TTS Pipeline
+Unlike standard voice assistants, Pyxis is deeply grounded in the vessel's physical reality.
+*   **Gemini 2.5 Flash Integration:** You built a custom prompt engine that injects the fused State Vector (engine RPM, fuel, AIS contacts, GDELT threats) directly into the LLM context. When you ask *"Any threats nearby?"* in the Strait of Hormuz, the LLM doesn't just guess—it cross-references your exact latitude/longitude against live OSINT and AIS drops.
+*   **Kokoro ONNX TTS:** Instead of relying entirely on expensive cloud TTS APIs, the system uses a localized, offline AI voice synthesizer (Kokoro) to instantly generate human-like speech from Gemini's tactical SITREPs, broadcasting them to the Web UI or Garmin watch.
 
-        subgraph ENDPOINTS ["HTTP API Endpoints"]
-            EP_SCENARIO["/scenario\nVessel Position Source of Truth"]
-            EP_BRIEF["/gemini\nAI Tactical Brief (on-demand)"]
-            EP_INTEL["/intel_feed\nGMDSS Intelligence Report"]
-            EP_AIS["/ais_radar_map\nComposited Radar + AIS Image"]
-            EP_MAP["/marine_map\nSea State Arrow Map"]
-            EP_RADAR["/radar\nWeather Radar JPEG"]
-            EP_AUDIO["/get_report_audio\nTTS Audio Delivery"]
-            EP_INBOX["/inbox\nDecoupled Text Messages"]
-        end
+## 3. The Synthetic Environment (`manta-sim`)
+To test and validate the AI without risking a physical vessel, you built `combined_mantasim2.py`.
+*   This is a headless physics and telemetry simulator that natively mimics the NMEA 2000 backbone of a 50ft exploration vessel. 
+*   It generates synthetic engine RPMs, depths, wind angles, battery voltages, and even simulates deploying autonomous submersibles (RPVs) or surface drones (USVs).
+*   The simulator seamlessly falls back into the Proxy; if the physical Garmin watch disconnects, the Simulator takes over, allowing you to run global "War Games" or scenario planning remotely via the Web Dashboard.
 
-        JANITOR["🗑️ audio_janitor_worker\nAuto-purges old .wav files\n(every hr)"]
-    end
+## 4. The Operator Interfaces (UI/UX)
+You have built two primary ways to interact with the Pyxis neural network:
 
-    subgraph AI_LAYER ["🤖 Google Gemini AI Engine"]
-        GEMINI["✨ Google Gemini 2.5 Flash\nwith Google Search grounding\nThreat Analysis & SITREP\nSynthesis"]
-        GEMINI_KEY["🔑 GEMINI_API_KEY\n(.env)"]
-    end
+1.  **Wearable Tactical Edge (Garmin Epix Pro ConnectIQ)**:
+    *   A custom Garmin watch app written in Monkey C that translates the massive JSON data hose into hyper-optimized, wrist-sized tactical screens.
+    *   Features include animated "Wave Roses", live ADS-B airspace tracking grids, and segmented string logs to bypass Garmin's memory limits when displaying large text briefs.
+2.  **Pyxis Command Web Dashboard (React/Vite)**:
+    *   A sleek, dark-mode, glassmorphic Single Page Application hosted at `benfishmanta.duckdns.org/dashboard`.
+    *   Features a Live Canvas to visually track simulated drones and real AIS contacts.
+    *   Provides remote "Warp" capabilities to instantly teleport the vessel simulator to global chokepoints (e.g., Taiwan Strait, Suez Canal) to test the OSINT scrapers.
+    *   **DevOps `SYS-DIAG` Core**: Real-time VM telemetry tracking CPU, RAM, systemd worker statuses, and pipeline cache freshness, ensuring you have total visibility into the health of your Cloud architecture.
 
-    subgraph TTS ["🔊 TTS Audio Pipeline"]
-        KOKORO["🎙️ Kokoro ONNX\n(Alice — British, Local)"]
-        GTTS["🔊 gTTS\n(Google, Fallback)"]
-        ELEVENLABS["🎵 ElevenLabs\n(Ruby — Cloud, Fallback)"]
-        BRAIN["brain_worker\nTask Queue Consumer\n→ audio_<id>.wav"]
-    end
+---
 
-    subgraph CLIENTS ["📱 Output Clients"]
-        WATCH_OUT["⌚ Garmin Watch\nGarminBenfish.mc\nMonkey C App"]
-        DASH["🌐 Pyxis Lite Dashboard\nmantacomms.html\nWeb UI"]
-        MAP_GEN["🗺️ marine_map_gen.py\nSea State Map Generator"]
-    end
-
-    %% OSINT → Workers
-    GDELT --> W_OSINT
-    FIRMS --> W_OSINT
-    GDACS --> W_GDACS
-    GMDSS --> W_GMDSS
-    ASAM --> W_ASAM
-    NTM --> W_NTM
-    OSM --> W_OSM
-    METEO --> W_METEO
-    ETOPO --> W_METEO
-    NOAASWPC --> W_SWPC
-    USGS --> W_SEISMIC
-    SUNAPI --> W_GEO
-    NOMINATIM --> W_GEO
-
-    %% AIS live feed
-    AIS --> FUSION
-
-    %% Workers → Fusion
-    W_OSINT --> FUSION
-    W_GDACS --> FUSION
-    W_GMDSS --> FUSION
-    W_ASAM --> FUSION
-    W_NTM --> FUSION
-    W_OSM --> FUSION
-    W_METEO --> FUSION
-    W_SWPC --> FUSION
-    W_SEISMIC --> FUSION
-    W_GEO --> FUSION
-
-    %% Sensor inputs
-    WATCH_IN --> EP_SCENARIO
-    SIM --> EP_SCENARIO
-    EP_SCENARIO --> FUSION
-
-    %% Fusion → Endpoints
-    FUSION --> EP_BRIEF
-    FUSION --> EP_INTEL
-    FUSION --> EP_AIS
-    FUSION --> EP_MAP
-    FUSION --> EP_RADAR
-
-    %% Radar tiles
-    RAINV --> EP_RADAR
-    CARTODBG --> EP_AIS
-    CARTODBG --> EP_MAP
-
-    %% Gemini integration
-    GEMINI_KEY --> GEMINI
-    EP_BRIEF --> GEMINI
-    EP_INTEL --> GEMINI
-    GEMINI --> BRAIN
-
-    %% TTS pipeline
-    BRAIN --> KOKORO
-    BRAIN --> GTTS
-    BRAIN --> ELEVENLABS
-    KOKORO --> EP_AUDIO
-    GTTS --> EP_AUDIO
-    ELEVENLABS --> EP_AUDIO
-    JANITOR -.->|cleans| EP_AUDIO
-
-    %% Outputs to clients
-    EP_AUDIO --> WATCH_OUT
-    EP_AUDIO --> DASH
-    EP_BRIEF --> DASH
-    EP_INTEL --> DASH
-    EP_INBOX --> WATCH_OUT
-    EP_AIS --> WATCH_OUT
-    EP_RADAR --> WATCH_OUT
-    EP_MAP --> WATCH_OUT
-    FUSION --> MAP_GEN
-    MAP_GEN --> EP_MAP
-```
-
-## Component Summary
-
-| Layer | Component | Purpose |
-|---|---|---|
-| **OSINT** | GDELT Project | Breaking maritime/naval/piracy news headlines |
-| **OSINT** | NASA FIRMS | Real-time thermal anomalies (fires, explosions) via VIIRS satellite |
-| **OSINT** | GDACS | Global disaster alerts (TC, FL, EQ, TS) — Orange/Red severity |
-| **OSINT** | NGA GMDSS | Official NAVAREA maritime broadcast warnings (kinetic, SAR, nav hazard) |
-| **OSINT** | NGA ASAM | Anti-Shipping Activity Message piracy incident database |
-| **OSINT** | NGA MSI NTM | Notice to Mariners navigational updates |
-| **Marine** | AISStream | Live AIS vessel contacts via WebSocket |
-| **Marine** | OpenSeaMap | Seamarks, buoys, shoals, reefs (Overpass API) |
-| **Marine** | Open-Meteo Marine | Wave height, direction, period, ocean current velocity |
-| **Marine** | ETOPO1 | Seafloor bathymetric depth |
-| **Marine** | RainViewer | Live weather radar tiles (capped at zoom 9) |
-| **Environment** | NOAA SWPC | Planetary K-Index solar storm monitoring |
-| **Environment** | USGS | Real-time earthquake/seismic/tsunami feed |
-| **Geo** | OSM Nominatim | Reverse geocoding — vessel's current region/ocean name |
-| **Geo** | Sunrise-Sunset API | Local sunrise/sunset for AI temporal context |
-| **AI** | **Google Gemini 2.5 Flash** | Full SITREP synthesis with Google Search grounding, threat analysis |
-| **TTS** | Kokoro ONNX | Primary local TTS — British "Alice" voice |
-| **TTS** | gTTS | Fallback cloud TTS |
-| **TTS** | ElevenLabs | Secondary fallback — "Ruby" voice |
-| **Clients** | Garmin Watch | MonkeyC watch app — displays radar, AIS, sea state, receives audio |
-| **Clients** | Pyxis Lite | Web dashboard — briefings, intel feed, real-time map |
-| **Clients** | MarineMapGen | Server-side sea state arrow map compositor |
+### Summary
+You haven't just built an app; you've engineered a **naval combat-information-center (CIC)** scaled down for a single operator. It is a robust, modular, and AI-native architecture capable of fusing live global satellite data with local vessel telemetry to keep a skipper perfectly informed in the most hostile environments on Earth.
