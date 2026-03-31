@@ -1,4 +1,4 @@
-﻿# Copyright (c) 2026 Benjamin Pullin. All rights reserved.
+# Copyright (c) 2026 Benjamin Pullin. All rights reserved.
 """
 PYXIS PROXY SERVER v4.1.1 - (WIND MAP ENABLED)
 ===================================================
@@ -5533,7 +5533,12 @@ THREAT: [NONE/LOW/MEDIUM/HIGH — tactical threat assessment reason, max 100 cha
                         if news: osint_geo = " | ".join(news)
                         else: osint_geo = "No Breaking Maritime Piracy/Naval Alerts."
             except Exception as e: log(f"OSINT Cache Err: {e}")
-            ais_summary = ", ".join([f"{v.get('name', 'Unknown')} ({round(v.get('distance',0)/1852,1)} nautical miles)" for v in get_active_ais_list()[:3]])
+            # Pass vessel position so get_active_ais_list() calculates range_nm for each contact
+            _ais_contacts = get_active_ais_list(ref_lat=la_r, ref_lon=lo_r)[:5]
+            ais_summary = ", ".join([
+                f"{v.get('name','Unknown')} ({v.get('range_nm', 0):.1f} nautical miles, bearing {v.get('bearing',0):.0f}deg)"
+                for v in _ais_contacts if v.get('range_nm', 0) > 0.05  # filter contacts at own position
+            ])
             if not ais_summary: ais_summary = "No immediate AIS targets detected."
 
             gmdss_txt = "No active NAVAREA warnings."
@@ -5718,24 +5723,26 @@ THREAT: [NONE/LOW/MEDIUM/HIGH — tactical threat assessment reason, max 100 cha
                     user_q = orig_prompt.replace("VOICE_QUERY:", "").strip().strip(":")
                 ins = (
                     f"You are Pyxis, the AI navigation and vessel management system aboard Manta, a 50ft exploration vessel. Skipper is Ben.\n"
-                    f"The Skipper asked via voice: \x27{user_q}\x27\n"
+                    f"Vessel position: {la_r}N, {lo_r}E.\n"
+                    f"The Skipper asked via voice: '{user_q}'\n"
                     "Answer naturally and conversationally. Match your answer length to the question:\n"
                     "- Simple sensor facts (e.g. engine temp, fuel level, depth): 1 sentence.\n"
                     "- Calculations (e.g. range to destination, time to run out of water/fuel): work out the math from the data below and give a clear answer in 2-3 sentences.\n"
                     "- Forecasts, sunset/sunrise, tides, area news, nearest ship: use Google Search grounding and answer in 2-4 sentences.\n"
-                    "- Threat/security questions: summarise what GMDSS alerts and AIS contacts show, supplement with Google Search. 3-4 sentences.\n"
+                    f"- Threat/security questions (piracy, military, armed conflict, vessel seizures, missile/drone activity, warships): ALWAYS use Google Search grounding FIRST to find CURRENT real-world incidents near {la_r}N, {lo_r}E. Do NOT rely solely on GMDSS — it may be delayed or incomplete. Cross-reference AIS contacts. Report specific named incidents with distances. Never say 'no threats' without first conducting a Google Search. 3-5 sentences.\n"
                     "Speak in first person as Pyxis. Plain conversational prose. No report headers, no bullet points, no sign-offs.\n"
                     "LIVE VESSEL DATA:\n"
-                    f"ENGINE: RPM={sens.get(\"rpm\",\"N/A\")}, Coolant={sens.get(\"coolant_temp\",sens.get(\"coolant\",\"N/A\"))}C, "
-                    f"Oil={sens.get(\"oil_pressure\",\"N/A\")}psi, Exhaust={sens.get(\"exhaust_temp\",\"N/A\")}C, Hours={sens.get(\"engine_hours\",\"N/A\")}h.\n"
-                    f"TANKS: Fuel={sens.get(\"fuel_pct\",sens.get(\"fuel\",\"N/A\"))}%, FreshWater={sens.get(\"fresh_water_pct\",\"N/A\")}%, GreyWater={sens.get(\"grey_water_pct\",\"N/A\")}%.\n"
-                    f"POWER: Battery={sens.get(\"bat_v\",\"N/A\")}V, Alternator={sens.get(\"alt_v\",sens.get(\"alternator_v\",\"N/A\"))}V, Solar={sens.get(\"solar_w\",\"N/A\")}W, WindGen={sens.get(\"wind_gen_w\",\"N/A\")}W.\n"
-                    f"NAV: SOG={sens.get(\"SOG\",\"N/A\")}kn, COG={sens.get(\"COG\",\"N/A\")}deg, Heading={sens.get(\"heading\",\"N/A\")}deg, Depth={sens.get(\"depth\",sens.get(\"sled_depth\",\"N/A\"))}m.\n"
-                    f"ENV: Wind={sens.get(\"wind_speed\",\"N/A\")}kn@{sens.get(\"wind_dir\",\"N/A\")}deg, "
-                    f"Wave={sens.get(\"wave_height\",sens.get(\"sig_wave_height\",\"N/A\"))}m, Swell={sens.get(\"wave_period\",sens.get(\"mean_wave_period\",\"N/A\"))}s period, "
-                    f"SeaTemp={sens.get(\"sea_temp\",sens.get(\"sst\",\"N/A\"))}C, Current={sens.get(\"current_speed\",\"N/A\")}kn@{sens.get(\"current_dir\",\"N/A\")}deg, "
-                    f"Baro={sens.get(\"baro\",sens.get(\"BARO_PRES\",\"N/A\"))}hPa.\n"
-                    f"SYSTEMS: Bilge={sens.get(\"bilge_status\",\"N/A\")}, CO={sens.get(\"co_status\",\"N/A\")}, Starlink={sens.get(\"dish_status\",\"N/A\")}.\n"
+                    f"ENGINE: RPM={sens.get('rpm','N/A')}, Coolant={sens.get('coolant_temp',sens.get('coolant','N/A'))}C, "
+                    f"Oil={sens.get('oil_pressure','N/A')}psi, Exhaust={sens.get('exhaust_temp','N/A')}C, Hours={sens.get('engine_hours','N/A')}h.\n"
+                    f"TANKS: Fuel={sens.get('fuel_pct',sens.get('fuel','N/A'))}%, FreshWater={sens.get('fresh_water_pct','N/A')}%, GreyWater={sens.get('grey_water_pct','N/A')}%.\n"
+                    f"POWER: Battery={sens.get('bat_v','N/A')}V, Alternator={sens.get('alt_v',sens.get('alternator_v','N/A'))}V, Solar={sens.get('solar_w','N/A')}W, WindGen={sens.get('wind_gen_w','N/A')}W.\n"
+                    f"NAV: SOG={sens.get('SOG','N/A')}kn, COG={sens.get('COG','N/A')}deg, Heading={sens.get('heading','N/A')}deg, Depth={sens.get('depth',sens.get('sled_depth','N/A'))}m.\n"
+                    f"ENV: Wind={sens.get('wind_speed','N/A')}kn@{sens.get('wind_dir','N/A')}deg, "
+                    f"Wave={sens.get('wave_height',sens.get('sig_wave_height','N/A'))}m, Swell={sens.get('wave_period',sens.get('mean_wave_period','N/A'))}s period, "
+                    f"SeaTemp={sens.get('sea_temp',sens.get('sst','N/A'))}C, Current={sens.get('current_speed','N/A')}kn@{sens.get('current_dir','N/A')}deg, "
+                    f"Baro={sens.get('baro',sens.get('BARO_PRES','N/A'))}hPa.\n"
+                    f"SYSTEMS: Bilge={sens.get('bilge_status','N/A')}, CO={sens.get('co_status','N/A')}, Starlink={sens.get('dish_status','N/A')}.\n"
+                    f"AIS: {ais_summary}\n"
                     f"EW: {spoofing_alert}\n"
                 )
             else:
@@ -5758,6 +5765,9 @@ THREAT: [NONE/LOW/MEDIUM/HIGH — tactical threat assessment reason, max 100 cha
                     f"ENVIRONMENT: {weather_block}\n"
                     f"GMDSS ALERTS: {gmdss_txt}\n"
                     f"AIS CONTACTS: {ais_summary}\n"
+                    f"OSINT/GDELT GEOPOLITICAL: {osint_geo}\n"
+                    f"OSINT/SATELLITE THERMAL: {osint_therm}\n"
+                    f"OSINT REGIONAL VECTOR: {osint_regional}\n"
                     f"--- END LIVE FEED ---\n"
                 )
                 ins += "\n\n" + context_payload
