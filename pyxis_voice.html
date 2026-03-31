@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<!--
+=============================================================================
+  PYXIS VOICE LINK  —  pyxis_voice.html  (v4.1.1)
+=============================================================================
+  PURPOSE:
+    Mobile-first voice interface for the Pyxis AI system aboard vessel Manta.
+    Opens at https://benfishmanta.duckdns.org/voice on any phone/tablet.
+
+  HOW IT WORKS (end-to-end flow):
+    1. User taps the mic button (or a quick-command pill button)
+    2. Browser Web Speech API transcribes speech to text
+    3. buildPrompt() prepends VOICE_QUERY: prefix for natural language,
+       or passes button commands (STATUS, QUICK_SITREP etc.) unchanged
+    4. POST to /gemini on the proxy — returns immediately with task_id
+    5. poll() hits /status_api every 3 seconds watching audio_history[]
+       Once the proxy marks the entry ready=true, the text is displayed
+       and /audio?id=X is fetched and played back via HTML5 Audio
+    6. Proactive threshold alerts are checked every 20 sec via /status_api
+       (coolant temp, fuel %, depth, battery voltage, CO alarm)
+
+  DEPENDENCIES / BACKEND:
+    - Proxy server: benfishmanta.duckdns.org (Flask, Python)
+    - Auth: Basic auth  admin:manta  +  X-Garmin-Auth token
+    - Endpoints used:  POST /gemini  |  GET /status_api  |  GET /audio
+    - TTS: Kokoro ONNX on the proxy (local, no cloud API needed)
+    - AI: Google Gemini 2.5 Flash with Google Search grounding
+
+  INTENT ROUTING (WHO CLASSIFIES THE QUERY?):
+    The HTML does MINIMAL routing — only button-prefix matching.
+    All intent classification (threat vs sensor vs calc vs search) is
+    handled server-side in proxy.py  gem_trig() function.
+    Modifying routing logic: edit gem_trig() in proxy.py, not here.
+
+  BUTTON QUICK COMMANDS (data-p attribute on .q buttons):
+    WEATHER_SITREP   → Weather report brief
+    QUICK_SITREP     → Fast 3-4 para tactical brief (cached data + Search)
+    DAY_BRIEF        → Morning full status report
+    NIGHT_BRIEF      → Evening full status report
+    PULL_NAV_DATA:X  → Anchorage / Port Intel
+    Natural language → sent as VOICE_QUERY: to proxy for classification
+
+  CONVERSATION MEMORY:
+    Last 2 Q&A exchanges stored in convHistory[] for 5 minutes.
+    Injected into subsequent VOICE_QUERY prompts as context so follow-up
+    questions like "what about at those speeds?" work correctly.
+    Only natural language queries (not button commands) are stored.
+
+  AUDIO / AUTOPLAY:
+    Mobile browsers block audio autoplay without user gesture.
+    First tap of any element satisfies the gesture requirement.
+    If playback blocked, user sees "tap page to enable sound" fallback.
+
+  TO DEPLOY:
+    scp pyxis_voice.html icanjumpuddles@benfishmanta.duckdns.org:/home/icanjumpuddles/manta-comms/pyxis_voice.html
+    The Flask proxy serves it at the /voice route — no restart needed.
+
+  TO CHANGE AUTH TOKENS:
+    Line ~83: AT         = Garmin watch token for /status_api calls
+    Line ~84: GEMINI_AT  = High-privilege token for /gemini calls
+    Line ~86: BA         = Basic auth header (admin:manta base64 encoded)
+    These MUST match the values in proxy.py  _is_trusted_request()
+=============================================================================
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<!-- Prevent zoom on mobile so the mic button feels like a native app -->
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<!-- iOS: add to home screen runs without Safari chrome (standalone app mode) -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>PYXIS VOICE LINK</title>
+<!-- Orbitron: military-style display font for the logo -->
+<!-- Share Tech Mono: monospace readability for telemetry text -->
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
+<style>
+/*
+ * CSS DESIGN SYSTEM
+ * --c  cyan-blue : primary UI colour (status text, borders, mic ring)
+ * --g  green     : Pyxis AI response text / active indicators
+ * --r  red       : alerts, errors, recording indicator
+ * --a  amber     : busy/processing state
+ * --bg dark navy : base background (near-black for AMOLED power saving)
+ */
+:root{--c:#00c8ff;--g:#39ff14;--r:#ff3232;--a:#ffb300;--bg:#020d14}
+*{box-sizing:border-box;margin:0;padding:0}
+
+/* Body: full-height flex column, scanline background texture for aesthetic */
+body{font-family:'Share Tech Mono',monospace;background:var(--bg);color:var(--c);min-height:100dvh;display:flex;flex-direction:column;align-items:center;background-image:radial-gradient(ellipse at 50% 0%,rgba(0,100,180,.15),transparent 70%),repeating-linear-gradient(0deg,transparent,transparent 39px,rgba(0,180,255,.04) 40px)}
+
+/* Sticky header: logo + proxy status dot + status label */
+header{width:100%;padding:14px 18px 10px;display:flex;align-items:center;gap:10px;border-bottom:1px solid rgba(0,180,255,.3);background:rgba(0,8,18,.97);position:sticky;top:0;z-index:10}
+.logo{font-family:'Orbitron',sans-serif;font-size:17px;font-weight:900;letter-spacing:3px}.logo span{color:var(--g)}
+#sl{font-size:11px;color:rgba(255,255,255,.4);margin-left:auto}
+
+/* Status indicator dot: green=online, amber=busy, red=offline */
+.dot{width:9px;height:9px;border-radius:50%;background:var(--r);box-shadow:0 0 8px var(--r);transition:all .4s;flex-shrink:0}
+.dot.on{background:var(--g);box-shadow:0 0 10px var(--g)}.dot.busy{background:var(--a);box-shadow:0 0 10px var(--a);animation:p .8s infinite}
+
+/* Conversation feed: scrollable area between header and sticky mic area */
+#convo{flex:1;width:100%;max-width:600px;padding:16px 14px;display:flex;flex-direction:column;gap:14px;overflow-y:auto}
+
+/* Chat bubbles: u=user (right, blue), p=pyxis (left, green), s=system (centre, amber) */
+.b{max-width:90%;padding:11px 14px;border-radius:12px;font-size:13px;line-height:1.6;animation:fu .25s ease}
+.b.u{align-self:flex-end;background:rgba(0,180,255,.13);border:1px solid rgba(0,180,255,.4);color:#fff}
+.b.p{align-self:flex-start;background:rgba(0,60,30,.5);border:1px solid rgba(57,255,20,.3);color:var(--g)}
+.b.s{align-self:center;background:rgba(255,179,0,.1);border:1px solid rgba(255,179,0,.3);color:var(--a);font-size:11px;text-align:center;max-width:100%}
+.bl{font-size:10px;opacity:.5;margin-bottom:4px}
+
+/* Mic area: sticky footer with waveform, mic button, control buttons */
+#mic-area{width:100%;max-width:600px;padding:18px 14px 32px;display:flex;flex-direction:column;align-items:center;gap:14px;border-top:1px solid rgba(0,180,255,.3);background:rgba(0,5,14,.97);position:sticky;bottom:0}
+#wv{display:flex;align-items:center;justify-content:center;gap:3px;height:40px;width:200px}
+
+/* Waveform bars: animated when mic is active (wOn/wOff functions) */
+.bar{width:4px;border-radius:2px;background:var(--c);opacity:.22;height:7px;transition:height .08s}.bar.on{opacity:1}
+
+/* Main mic button: glowing circle, turns red when recording, amber when busy */
+#mb{width:82px;height:82px;border-radius:50%;border:3px solid var(--c);background:rgba(0,28,58,.8);color:var(--c);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .2s;box-shadow:0 0 18px rgba(0,200,255,.55),inset 0 0 20px rgba(0,100,180,.2);-webkit-tap-highlight-color:transparent;touch-action:manipulation;user-select:none}
+#mb:active{transform:scale(.91)}#mb.rec{border-color:var(--r);box-shadow:0 0 28px rgba(255,50,50,.8);animation:p 1s infinite}
+#mb.busy{border-color:var(--a);box-shadow:0 0 22px rgba(255,179,0,.7);opacity:.85}
+
+/* INTERRUPT button: only visible while audio is playing (show class added by JS) */
+#stop-btn{display:none;padding:6px 16px;border-radius:20px;border:1px solid rgba(255,50,50,.5);background:rgba(255,50,50,.12);color:var(--r);font-family:'Share Tech Mono',monospace;font-size:11px;cursor:pointer;-webkit-tap-highlight-color:transparent;touch-action:manipulation;transition:all .15s}
+#stop-btn.show{display:block}
+#tx{width:100%;text-align:center;font-size:13px;color:rgba(255,255,255,.6);font-style:italic;padding:0 8px}
+
+/* Quick command pills: tap to fire a preset command to the proxy */
+#qs{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;width:100%;padding:0 4px}
+.q{padding:5px 13px;border-radius:20px;border:1px solid rgba(0,180,255,.3);background:rgba(0,38,68,.8);color:var(--c);font-family:'Share Tech Mono',monospace;font-size:11px;cursor:pointer;-webkit-tap-highlight-color:transparent;touch-action:manipulation;transition:all .15s}
+.q:active{background:rgba(0,100,180,.45);transform:scale(.95)}
+
+/* "PYXIS SPEAKING" indicator: pulsing dots while audio plays */
+#playing{display:none;align-items:center;gap:6px;font-size:11px;color:var(--g);animation:p 1.2s infinite}
+#playing.show{display:flex}.pd span{display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--g);animation:p 1.2s infinite}
+.pd span:nth-child(2){animation-delay:.18s}.pd span:nth-child(3){animation-delay:.36s}
+
+/* GPS coordinates display at bottom of mic area */
+#co{font-size:10px;color:rgba(0,200,255,.32);letter-spacing:1px;text-align:center}
+
+/* Animations */
+@keyframes p{0%,100%{opacity:1}50%{opacity:.4}}           /* pulse: for busy states */
+@keyframes fu{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}} /* fly-up: bubble entry */
+@keyframes sp{to{transform:rotate(360deg)}}                 /* spin: loading spinner */
+.sp{display:inline-block;width:15px;height:15px;border:2px solid rgba(0,200,255,.3);border-top-color:var(--c);border-radius:50%;animation:sp .8s linear infinite;vertical-align:middle;margin-right:5px}
+</style>
+</head>
+<body>
+
+<!-- ================================================================
+     HEADER — Logo + proxy connection status
+     ================================================================ -->
+<header>
+  <div class="logo">PYX<span>IS</span>&nbsp;LINK</div>
+  <div id="sl">OFFLINE</div>   <!-- status label: updated by setStatus() -->
+  <div class="dot" id="dot"></div>  <!-- colour dot: red/amber/green -->
+</header>
+
+<!-- ================================================================
+     CONVERSATION FEED — scrollable message history
+     New bubbles appended by bub() and tbub() functions
+     ================================================================ -->
+<div id="convo">
+  <div class="b s">VOICE CHANNEL OPEN — TAP MIC OR USE QUICK COMMANDS</div>
+</div>
+
+<!-- ================================================================
+     MIC AREA — sticky footer: waveform / mic button / buttons
+     ================================================================ -->
+<div id="mic-area">
+  <!-- Animated waveform bars (18 bars, animated by wOn/wOff) -->
+  <div id="wv"></div>
+  <!-- Live transcript / status text shown while recording -->
+  <div id="tx">Tap mic to speak&hellip;</div>
+  <!-- Main mic button — SVG microphone icon inline -->
+  <button id="mb" aria-label="Speak to Pyxis">
+    <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="9" y="2" width="6" height="12" rx="3"/>
+      <path d="M5 10a7 7 0 0 0 14 0"/>
+      <line x1="12" y1="19" x2="12" y2="22"/>
+      <line x1="9" y1="22" x2="15" y2="22"/>
+    </svg>
+  </button>
+  <!-- Shown while Pyxis audio is playing — click triggers interrupt() -->
+  <div id="playing"><div class="pd"><span></span><span></span><span></span></div>PYXIS SPEAKING</div>
+  <!-- Barge-in button: stops audio mid-sentence and resets for new query -->
+  <button id="stop-btn" onclick="interrupt()">&#x25A0; INTERRUPT</button>
+
+  <!-- ================================================================
+       QUICK COMMAND BUTTONS
+       data-p attribute = exact string sent to proxy (no VOICE_QUERY prefix)
+       Add/remove buttons here. The proxy routes based on the prefix word.
+       See REPORT_CMDS in the JS below for which prefixes bypass VOICE_QUERY.
+       ================================================================ -->
+  <div id="qs">
+    <button class="q" data-p="WEATHER_SITREP">&#x26C5; WEATHER</button>
+    <!-- SITREP → QUICK_SITREP: fast 3-4 para brief using cached proxy data + Google Search -->
+    <button class="q" data-p="QUICK_SITREP">&#x1F4CA; SITREP</button>
+    <!-- For the verbose 6-section full brief, use: data-p="STATUS" -->
+    <button class="q" data-p="DAY_BRIEF">&#x1F305; DAY BRIEF</button>
+    <button class="q" data-p="NIGHT_BRIEF">&#x1F319; NIGHT BRIEF</button>
+    <button class="q" data-p="PULL_NAV_DATA:ANCHORAGE">&#x2693; ANCHORAGE</button>
+    <button class="q" data-p="PULL_NAV_DATA:PORT">&#x1F3E0; PORT INTEL</button>
+    <!-- These buttons send natural language → routed via VOICE_QUERY on proxy -->
+    <button class="q" data-p="What vessels are near me and where are they heading?">&#x1F6E5; TRAFFIC</button>
+    <button class="q" data-p="What is my current depth and any grounding risk?">&#x1F4CF; DEPTH</button>
+    <button class="q" data-p="Give me a full engine and systems status check">&#x2699; SYSTEMS</button>
+    <button class="q" data-p="Any piracy, security or safety alerts in my region?">&#x26A0; ALERTS</button>
+  </div>
+
+  <!-- Live GPS coordinates (pulled from browser geolocation or fallback to proxy) -->
+  <div id="co">LAT: -- | LON: --</div>
+</div>
+
+<!-- ================================================================
+     JAVASCRIPT — ALL APPLICATION LOGIC
+     ================================================================ -->
+<script>
+// ============================================================
+// CONFIGURATION — Update these if infrastructure changes
+// ============================================================
+const BASE = 'https://benfishmanta.duckdns.org'; // Proxy server base URL
+const AT   = 'BENFISH_ACTUAL_77X';               // Standard auth token (status_api, audio)
+const GEMINI_AT = 'PYXIS_ACTUAL_77X';            // High-privilege token for /gemini endpoint
+const BA   = 'Basic ' + btoa('admin:manta');     // Basic auth header (base64 admin:manta)
+// NOTE: AT and GEMINI_AT must match proxy.py _is_trusted_request() check
+
+// ============================================================
+// GLOBAL STATE
+// ============================================================
+let lat = null, lon = null;      // GPS position (from browser or proxy fallback)
+let recog = null;                // SpeechRecognition instance
+let recording = false;           // True while mic is actively capturing
+let working = false;             // True while waiting for proxy response
+let curAudio = null;             // Current playing HTMLAudioElement (for interrupt)
+let pollTmr = null;              // Interval ID for the status_api poll loop
+let lastId = 0;                  // Highest audio_history ID seen (dedup guard)
+let interruptFlag = false;       // Set true to cancel an in-flight poll
+let alertsFired = {};            // Tracks alert suppression timers {id: timestamp}
+let convHistory = [];            // Last 2 Q&A pairs for follow-up context (5 min TTL)
+let convLastMs = 0;              // Timestamp of last conversation update
+let audioCtx = null;             // Web Audio API context (lazy-initialised)
+let lastUserQ = '';              // Last question sent (used for conversation storage)
+
+// DOM element references
+const convo   = document.getElementById('convo');
+const mb      = document.getElementById('mb');
+const dot     = document.getElementById('dot');
+const sl      = document.getElementById('sl');
+const tx      = document.getElementById('tx');
+const co      = document.getElementById('co');
+const playing = document.getElementById('playing');
+const wv      = document.getElementById('wv');
+const stopBtn = document.getElementById('stop-btn');
+
+// ============================================================
+// WAVEFORM VISUALISER — 18 animated bars while mic is active
+// ============================================================
+for (let i = 0; i < 18; i++) {
+  const b = document.createElement('div');
+  b.className = 'bar';
+  wv.appendChild(b);
+}
+const bars = [...wv.querySelectorAll('.bar')];
+let wt = null;
+function wOn()  { bars.forEach(b => b.classList.add('on')); wt = setInterval(() => bars.forEach(b => b.style.height = (4 + Math.random() * 28) + 'px'), 75); }
+function wOff() { clearInterval(wt); bars.forEach(b => { b.style.height = '7px'; b.classList.remove('on'); }); }
+
+// ============================================================
+// AUDIO TONES (Web Audio API — no server round-trip needed)
+// playPing()  — rising chirp on mic activation / Pyxis starts speaking
+// playBeep()  — short low beep on interrupt / barge-in
+// ============================================================
+function getAC() {
+  if (!audioCtx) try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch(e) {}
+  return audioCtx;
+}
+function playPing() {
+  try {
+    const c = getAC(); if (!c) return;
+    const o = c.createOscillator(), g = c.createGain();
+    o.connect(g); g.connect(c.destination);
+    o.type = 'sine';
+    o.frequency.setValueAtTime(550, c.currentTime);
+    o.frequency.linearRampToValueAtTime(1350, c.currentTime + 0.18);
+    g.gain.setValueAtTime(0.22, c.currentTime);
+    g.gain.linearRampToValueAtTime(0, c.currentTime + 0.28);
+    o.start(); o.stop(c.currentTime + 0.28);
+  } catch(e) {}
+}
+function playBeep() {
+  try {
+    const c = getAC(); if (!c) return;
+    const o = c.createOscillator(), g = c.createGain();
+    o.connect(g); g.connect(c.destination);
+    o.type = 'sine';
+    o.frequency.setValueAtTime(200, c.currentTime);
+    g.gain.setValueAtTime(0.15, c.currentTime);
+    g.gain.linearRampToValueAtTime(0, c.currentTime + 0.1);
+    o.start(); o.stop(c.currentTime + 0.1);
+  } catch(e) {}
+}
+
+// ============================================================
+// PROACTIVE THRESHOLD ALERTS
+// Checked every 20 seconds via the ping() function.
+// Each threshold has a 5-minute suppression window so it only
+// alerts once per event, not every poll cycle.
+//
+// TO ADD A NEW THRESHOLD:
+//   { key: d => +d.YOUR_FIELD, test: v => v > LIMIT, id: 'unique_id', msg: v => `text ${v}` }
+//   The 'id' is used for suppression tracking in alertsFired.
+// ============================================================
+const THRESHOLDS = [
+  // Coolant > 95°C → overheating imminent
+  { key: d => +(d.coolant_temp || d.coolant || 0), test: v => v > 0 && v > 95,  id: 'cool',  msg: v => `⚠ Engine coolant ${v}°C — overheating risk` },
+  // Fuel < 20% → refuel warning
+  { key: d => +(d.fuel_pct || d.fuel || 100),       test: v => v > 0 && v < 20,  id: 'fuel',  msg: v => `⚠ Fuel at ${v}% — consider refuelling` },
+  // Depth < 5m → shallow water grounding risk
+  { key: d => +(d.depth || d.sled_depth || 99),     test: v => v > 0 && v < 5,   id: 'depth', msg: v => `⚠ Depth ${v}m — shallow water` },
+  // Battery < 11.8V → critically low (below safe lead-acid minimum)
+  { key: d => +(d.bat_v || d.battery || 13),        test: v => v > 0 && v < 11.8,id: 'bat',   msg: v => `⚠ Battery ${v}V — critically low` },
+  // CO alarm: any non-OK, non-empty status triggers immediate alert
+  { key: d => String(d.co_status || 'OK'),          test: v => v !== 'OK' && v !== 'N/A' && v !== '', id: 'co', msg: _ => `🚨 CO ALERT — carbon monoxide detected` },
+];
+function checkThresholds(d) {
+  const now = Date.now();
+  THRESHOLDS.forEach(t => {
+    try {
+      const v = t.key(d);
+      if (t.test(v)) {
+        // Only fire if this alert has not fired in the last 5 minutes
+        if (!alertsFired[t.id] || now - alertsFired[t.id] > 300000) {
+          alertsFired[t.id] = now;
+          bub(t.msg(v), 's');
+        }
+      } else {
+        // Condition cleared — remove suppression so it can fire again if it returns
+        delete alertsFired[t.id];
+      }
+    } catch(e) {}
+  });
+}
+
+// ============================================================
+// GEOLOCATION — Pull GPS from browser, fall back to proxy
+// Called on init and refreshed every 30 seconds.
+// Position displayed in the #co element and sent with /gemini requests
+// ============================================================
+function geoInit() {
+  if (!navigator.geolocation) return;
+  navigator.geolocation.getCurrentPosition(
+    p => {
+      lat = p.coords.latitude; lon = p.coords.longitude;
+      co.textContent = 'LAT: ' + lat.toFixed(4) + ' | LON: ' + lon.toFixed(4);
+    },
+    // Geolocation denied or unavailable → fall back to proxy's vessel position
+    () => api('/status_api').then(d => {
+      lat = d.lat || d.CREW_LAT || -38.2;
+      lon = d.lon || d.CREW_LON || 144.9;
+      co.textContent = 'LAT: ' + lat.toFixed(4) + ' | LON: ' + lon.toFixed(4) + ' (PROXY)';
+    }).catch(() => { lat = -38.2; lon = 144.9; })  // Final fallback: Port Phillip Bay
+  );
+}
+
+// ============================================================
+// API HELPER — All requests to the proxy go through here
+// Automatically sets correct auth token based on endpoint:
+//   /gemini → PYXIS_ACTUAL_77X (high-privilege, triggers AI)
+//   all others → BENFISH_ACTUAL_77X + Basic auth
+// ============================================================
+async function api(path, opts = {}) {
+  const tok = (path === '/gemini' || path === '/voice_input') ? GEMINI_AT : AT;
+  const h = {
+    'X-Garmin-Auth': tok,
+    'Authorization': BA,
+    ...(opts.body ? { 'Content-Type': 'application/json' } : {})
+  };
+  const r = await fetch(BASE + path, { ...opts, headers: h });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
+}
+
+// ============================================================
+// STATUS MANAGEMENT — Updates header dot colour + label text
+// States: '' = offline (red), 'on' = online (green), 'busy' = processing (amber)
+// ============================================================
+function setStatus(state, label) { dot.className = 'dot ' + state; sl.textContent = label; }
+
+// ============================================================
+// PROXY HEALTH CHECK — Called every 20 sec and on page load
+// Also runs proactive threshold checks against the status data
+// ============================================================
+async function ping() {
+  try {
+    const d = await api('/status_api');
+    setStatus('on', 'PROXY ONLINE');
+    checkThresholds(d);   // Run threshold checks against fresh sensor data
+    return true;
+  } catch(e) {
+    setStatus('', 'PROXY OFFLINE');
+    return false;
+  }
+}
+
+// ============================================================
+// CHAT BUBBLE FACTORIES
+// bub(text, type, label) — creates a finished bubble in the conversation area
+//   type 'u' = user (right-aligned, blue)
+//   type 'p' = pyxis response (left-aligned, green)
+//   type 's' = system message (centred, amber)
+// tbub() — creates a "Processing..." placeholder that gets replaced on response
+// ============================================================
+function bub(text, type, label) {
+  const d = document.createElement('div');
+  d.className = 'b ' + type;
+  if (label) {
+    const l = document.createElement('div');
+    l.className = 'bl';
+    l.textContent = label;
+    d.appendChild(l);
+  }
+  d.appendChild(document.createTextNode(text));
+  convo.appendChild(d);
+  convo.scrollTop = convo.scrollHeight;
+  return d;
+}
+function tbub() {
+  const d = document.createElement('div');
+  d.className = 'b p';
+  d.innerHTML = '<div class="bl">PYXIS</div><span class="sp"></span>Processing...';
+  convo.appendChild(d);
+  convo.scrollTop = convo.scrollHeight;
+  return d;
+}
+
+// ============================================================
+// INTERRUPT / BARGE-IN
+// Stops current audio playback and cancels the pending poll loop.
+// Allows the user to start a new query while Pyxis is still speaking.
+// Also triggered by clicking the INTERRUPT button.
+// ============================================================
+function interrupt() {
+  playBeep();
+  if (curAudio) { curAudio.pause(); curAudio = null; }
+  playing.classList.remove('show');
+  stopBtn.classList.remove('show');
+  if (pollTmr) { clearInterval(pollTmr); pollTmr = null; }
+  interruptFlag = true;
+  working = false;
+  mb.classList.remove('busy');
+  setStatus('on', 'INTERRUPTED');
+  tx.textContent = 'Interrupted — tap mic to ask again';
+  setTimeout(() => setStatus('on', 'PROXY ONLINE'), 2000);
+}
+
+// ============================================================
+// PROMPT BUILDER — Decides how to wrap a query before sending
+//
+// BUTTON COMMANDS (REPORT_CMDS): pass through unchanged.
+//   The proxy routes these by their prefix word to the correct
+//   Gemini instruction template (STATUS, QUICK_SITREP, DAY_BRIEF, etc.)
+//
+// NATURAL LANGUAGE (everything else): prefixed with VOICE_QUERY:
+//   The proxy gem_trig() function receives this prefix and uses the
+//   conversational VOICE_QUERY instruction template, which has the
+//   full sensor block and allows variable-length natural answers.
+//   Recent conversation context is injected for follow-up questions.
+//
+// MODIFYING INTENT ROUTING: Do NOT add keyword matching here.
+//   Add classification logic inside gem_trig() in proxy.py instead.
+// ============================================================
+const REPORT_CMDS = ['STATUS', 'QUICK_SITREP', 'DAY_BRIEF', 'NIGHT_BRIEF', 'WEATHER_SITREP', 'PULL_NAV_DATA', 'FULL_REPORT', 'BRIEF'];
+function buildPrompt(raw) {
+  const up = raw.toUpperCase();
+  // Button commands pass through unchanged so proxy routes them correctly
+  if (REPORT_CMDS.some(c => up.startsWith(c))) return raw;
+  // Natural language — proxy classifies intent (threat vs sensor vs calculation vs search)
+  // Inject recent exchange context for follow-up questions (5-minute window)
+  let hist = '';
+  if (convHistory.length > 0 && Date.now() - convLastMs < 300000) {
+    hist = ' Context: ' + convHistory.map(h => `[Q:"${h.q}" A:"${h.a.substring(0, 100)}"]`).join(' ') + ' ';
+  }
+  return 'VOICE_QUERY:' + hist + ' Question: ' + raw;
+}
+
+// ============================================================
+// SEND — Main entry point for all queries (voice + button taps)
+// Flow:
+//   1. Interrupt any active response (barge-in)
+//   2. Get current lastId baseline from audio_history
+//   3. POST to /gemini (returns immediately, proxy queues the AI task)
+//   4. Start poll() loop waiting for the response
+// ============================================================
+async function send(prompt) {
+  lastUserQ = prompt;
+  if (working) interrupt();      // Barge-in: cancel previous if still running
+  interruptFlag = false;
+  working = true;
+  mb.classList.add('busy');
+  setStatus('busy', 'SENDING...');
+  // Snapshot current audio_history length to detect new responses
+  try {
+    const snap = await api('/status_api');
+    const h = snap.audio_history || [];
+    if (h.length) lastId = h[h.length - 1].id;
+  } catch(e) {}
+  const tb = tbub();    // Show "Processing..." placeholder
+  try {
+    const finalPrompt = buildPrompt(prompt);
+    // POST to /gemini — nonblocking, proxy queues AI task and returns task_id
+    await api('/gemini', { method: 'POST', body: JSON.stringify({ prompt: finalPrompt, lat: lat || -38.2, lon: lon || 144.9 }) });
+    tb.innerHTML = '<div class="bl">PYXIS</div><span class="sp"></span>Awaiting intelligence...';
+    setStatus('busy', 'AWAITING...');
+    poll(tb);    // Start polling for the completed response
+  } catch(err) {
+    tb.innerHTML = '<div class="bl">PYXIS</div>ERROR: ' + err.message;
+    tb.style.color = 'var(--r)';
+    done();
+  }
+}
+
+// ============================================================
+// POLL — Watches status_api/audio_history for completed response
+// Polls every 3 seconds. Times out at 40 attempts (120 seconds).
+// When a new ready=true entry appears with id > lastId, displays text + plays audio.
+//
+// WHY POLL INSTEAD OF WEBSOCKET?
+//   The proxy uses Flask (synchronous). The Garmin watch also polls /status_api.
+//   A single polling endpoint keeps the two clients in sync without complexity.
+//   If latency becomes an issue, migrate to SSE or WebSocket in the proxy.
+// ============================================================
+function poll(tb) {
+  let n = 0;
+  pollTmr = setInterval(async () => {
+    if (interruptFlag) { clearInterval(pollTmr); return; }
+    if (++n > 40) {
+      // Timeout after 120 seconds — AI or TTS took too long
+      clearInterval(pollTmr);
+      tb.innerHTML = '<div class="bl">PYXIS</div>Timeout.';
+      done();
+      return;
+    }
+    try {
+      const d = await api('/status_api');
+      // Find any audio_history entries that are new (id > lastId) and ready
+      const news = (d.audio_history || []).filter(e => e.ready && e.id > lastId);
+      if (news.length && !interruptFlag) {
+        clearInterval(pollTmr);
+        const e = news[news.length - 1];  // Take the newest ready entry
+        lastId = e.id;
+        // Display text (truncated at 900 chars to keep the UI clean)
+        const t = (e.text || '').substring(0, 900);
+        tb.innerHTML = '<div class="bl">PYXIS ' + new Date().toLocaleTimeString() + '</div>' + t
+                       + (e.text && e.text.length > 900 ? '...' : '');
+        // Store exchange in conversation memory for follow-up context
+        // Button-triggered reports are excluded (they're not conversational)
+        if (lastUserQ && !REPORT_CMDS.some(c => lastUserQ.toUpperCase().startsWith(c))) {
+          convHistory.push({ q: lastUserQ, a: (e.text || '').substring(0, 200) });
+          if (convHistory.length > 2) convHistory.shift();  // Keep only last 2 exchanges
+          convLastMs = Date.now();
+        }
+        playAudio(e.id);
+        done();
+      }
+    } catch(e) {}
+  }, 3000);  // Poll interval: 3 seconds (proxy TTS typically takes 5-20sec)
+}
+
+// ============================================================
+// AUDIO PLAYBACK — Fetches and plays the TTS audio file
+// URL: /audio?type=status&id=X — proxy serves the Kokoro-generated WAV
+// Cache-busting via &t=timestamp prevents browser from serving stale audio.
+// Autoplay policy: mobile browsers require a prior user gesture.
+//   If blocked, a fallback listener on the next tap triggers playback.
+// ============================================================
+async function playAudio(id) {
+  if (curAudio) { curAudio.pause(); curAudio = null; }
+  if (interruptFlag) return;
+  playing.classList.add('show');
+  playPing();                      // Play sonar-ping tone when Pyxis starts speaking
+  stopBtn.classList.add('show');   // Show INTERRUPT button
+  try {
+    const a = new Audio(BASE + '/audio?type=status&id=' + id + '&t=' + Date.now());
+    curAudio = a;
+    a.onended = a.onerror = () => {
+      playing.classList.remove('show');
+      stopBtn.classList.remove('show');
+      curAudio = null;
+    };
+    await a.play();
+  } catch(e) {
+    playing.classList.remove('show');
+    stopBtn.classList.remove('show');
+    bub('Audio blocked - tap page to enable sound', 's');
+    // One-shot click listener: next tap retries playback (satisfies autoplay policy)
+    document.addEventListener('click', () => curAudio?.play().catch(() => {}), { once: true });
+  }
+}
+
+// ============================================================
+// DONE — Resets UI state after response is complete or interrupted
+// ============================================================
+function done() {
+  working = false;
+  interruptFlag = false;
+  mb.classList.remove('busy');
+  stopBtn.classList.remove('show');
+  setStatus('on', 'PROXY ONLINE');
+}
+
+// ============================================================
+// SPEECH RECOGNITION SETUP
+// Uses the browser's Web Speech API (Chrome on Android recommended).
+// Language: en-AU (Australian English — best for maritime terms).
+// interimResults=true shows live transcript while speaking.
+// continuous=false: recognition auto-stops after a pause (single utterance).
+//
+// Mic button behaviour:
+//   First tap → start recording
+//   Second tap → stop early (will submit whatever was captured)
+//   Tap while Pyxis is speaking → barge-in (interrupt + record)
+// ============================================================
+function setupSR() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) {
+    bub('Speech recognition not supported. Use Chrome on Android.', 's');
+    mb.style.opacity = '.4';
+    mb.style.pointerEvents = 'none';
+    return;
+  }
+  recog = new SR();
+  recog.lang = 'en-AU';
+  recog.interimResults = true;
+  recog.continuous = false;
+  let final = '';
+  recog.onstart  = () => { recording = true;  mb.classList.add('rec'); tx.textContent = 'Listening...'; wOn(); };
+  recog.onresult = e => {
+    let interim = '';
+    final = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      if (e.results[i].isFinal) final += e.results[i][0].transcript;
+      else interim += e.results[i][0].transcript;
+    }
+    tx.textContent = final || interim || 'Listening...';
+  };
+  recog.onerror  = e => { wOff(); recording = false; mb.classList.remove('rec'); tx.textContent = e.error === 'no-speech' ? 'No speech - try again' : 'Error: ' + e.error; };
+  recog.onend    = () => {
+    wOff(); recording = false; mb.classList.remove('rec');
+    // Only submit if at least 3 chars captured (avoids accidental empty submits)
+    if (final && final.trim().length > 2) { bub(final, 'u', 'YOU'); send(final); }
+    else { tx.textContent = 'Tap mic to speak...'; }
+    final = '';
+  };
+}
+
+// ============================================================
+// CLICK / TOUCH EVENT HANDLERS
+// ============================================================
+
+// Mic button — handles both click (desktop) and touch (mobile)
+mb.addEventListener('click', () => {
+  if (!recog) return;
+  if (recording) { recog.stop(); return; }      // Double-tap: stop early
+  if (working || curAudio) interrupt();          // Barge-in if Pyxis responding
+  try { recog.start(); } catch(e) {}
+});
+// Touch events prevent ghost clicks on mobile (300ms delay) via preventDefault
+mb.addEventListener('touchstart', e => {
+  e.preventDefault();
+  if (!recog) return;
+  if (recording) return;
+  if (working || curAudio) interrupt();
+  try { recog.start(); } catch(e) {}
+}, { passive: false });
+mb.addEventListener('touchend', e => { e.preventDefault(); if (recording) recog?.stop(); });
+
+// Quick command pill buttons — fire on click, show as user bubble
+document.querySelectorAll('.q').forEach(b =>
+  b.addEventListener('click', () => {
+    bub(b.textContent.trim(), 'u', 'YOU');
+    send(b.dataset.p);  // data-p attribute is the raw command sent to proxy
+  })
+);
+
+// ============================================================
+// INITIALISATION — Runs on page load
+// ============================================================
+(async () => {
+  geoInit();                              // Start GPS resolution
+  setupSR();                             // Initialise speech recognition
+  const ok = await ping();               // Check proxy connectivity
+  if (!ok) bub('Cannot reach PYXIS proxy. Check network.', 's');
+  setInterval(geoInit, 30000);           // Refresh GPS every 30 seconds
+  setInterval(ping,    20000);           // Health check + threshold alerts every 20 seconds
+})();
+</script>
+</body>
+</html>

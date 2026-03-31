@@ -1,0 +1,20 @@
+[Unit]
+Description=Pyxis ADS-B OpenSky Worker
+After=network-online.target
+Wants=network-online.target
+# Do NOT depend on manta-proxy — we start independently and write shared cache files
+
+[Service]
+Type=simple
+User=icanjumpuddles
+WorkingDirectory=/home/icanjumpuddles/manta-comms
+ExecStart=/usr/bin/python3 /home/icanjumpuddles/manta-comms/adsb_worker.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+# Optional authenticated OpenSky account (400 req/day free)
+# EnvironmentFile=/home/icanjumpuddles/manta-comms/.env
+
+[Install]
+WantedBy=multi-user.target

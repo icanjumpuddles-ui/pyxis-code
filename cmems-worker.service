@@ -1,0 +1,19 @@
+[Unit]
+Description=Pyxis CMEMS Copernicus Worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=icanjumpuddles
+WorkingDirectory=/home/icanjumpuddles/manta-comms
+ExecStart=/usr/bin/python3 /home/icanjumpuddles/manta-comms/cmems_worker.py
+Restart=always
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+# Ensure CMEMS_USER and CMEMS_PASS are available
+EnvironmentFile=/home/icanjumpuddles/manta-comms/.env
+
+[Install]
+WantedBy=multi-user.target
