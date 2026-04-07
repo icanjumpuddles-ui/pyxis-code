@@ -39,6 +39,7 @@ import soundfile as sf
 import numpy as np
 from kokoro_onnx import Kokoro
 from functools import wraps
+import math
 
 def check_auth(username, password):
     return username == 'admin' and password == 'manta'
@@ -203,6 +204,7 @@ task_queue = queue.Queue()
 gen_lock = threading.Lock()
 task_results = {}
 inbox_messages = []
+sys_log = []
 inbox_lock = threading.Lock()
 force_kokoro = False
 # Default position: Yaringa Boat Harbour, Westernport Bay, VIC, AU
@@ -217,42 +219,6 @@ osm_cache_lock = threading.Lock()
 # --- OSINT INTELLIGENCE CACHE ---
 osint_cache_list = []
 import urllib.request
-def osint_worker():
-    global osint_cache_list
-    while True:
-        try:
-            req = urllib.request.Request('https://www.gdacs.org/gdacsapi/api/events/geteventlist/MAP?alertlevel=Orange,Red', headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=10) as response:
-                j_data = json.loads(response.read().decode())
-                feats = j_data.get('features', [])
-                
-                new_cache = []
-                for f in feats:
-                    props = f.get('properties', {})
-                    geom = f.get('geometry', {})
-                    if geom.get('type') == 'Point':
-                        lon, lat = geom['coordinates'][0], geom['coordinates'][1]
-                        
-                        etype = props.get('eventtype', '')
-                        cat = "OSINT_MILITARY"
-                        if etype in ["TC", "FL", "DR", "EQ", "VO", "TS"]: cat = "OSINT_WEATHER"
-                        
-                        name = props.get('name', 'Unknown Threat')[:15]
-                        
-                        new_cache.append({
-                            "id": f"{etype}_{props.get('eventid','0')}",
-                            "name": name,
-                            "type": cat,
-                            "lat": lat,
-                            "lon": lon
-                        })
-                
-                osint_cache_list = new_cache
-        except Exception as e:
-            pass
-        time.sleep(600) # Poll every 10 mins
-
-threading.Thread(target=osint_worker, daemon=True).start()
 
 def osm_worker():
     """
@@ -443,7 +409,13 @@ def log(msg):
     Standardizes console output for the Pyxis Server by prefixing messages with 'DEBUG:'.
     Flushes stdout immediately so Docker/Systemd journals capture logs in real-time.
     """
-    print(f"DEBUG: {msg}", flush=True)
+    global sys_log
+    line = f"DEBUG: {msg}"
+    print(line, flush=True)
+    if 'sys_log' in globals():
+        sys_log.append(line)
+        if len(sys_log) > 50:
+            sys_log = sys_log[-50:]
 
 log("---> INITIALIZING PYXIS MASTER v4.1.1 (RADAR_OSM)...")
 try:
@@ -1051,50 +1023,6 @@ def piracy_worker():
 
 threading.Thread(target=piracy_worker, daemon=True).start()
 
-def seismic_worker():
-    while True:
-        try:
-            r = requests.get('https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_hour.geojson', timeout=15)
-            if r.status_code == 200:
-                data = r.json().get('features', [])
-                with open(SEISMIC_CACHE_FILE, "w") as f:
-                    json.dump(data, f)
-                log(f"Seismic Worker: Cached {len(data)} recent earthquakes.")
-        except Exception as e:
-            log(f"Seismic Worker Err: {e}")
-        time.sleep(900)
-
-threading.Thread(target=seismic_worker, daemon=True).start()
-
-def meteo_worker():
-    while True:
-        try:
-            global last_known_lat, last_known_lon
-            r = requests.get(f'https://marine-api.open-meteo.com/v1/marine?latitude={last_known_lat}&longitude={last_known_lon}&current=wave_height,wave_direction,wave_period,ocean_current_velocity', timeout=15)
-            r2 = requests.get(f'https://api.opentopodata.org/v1/etopo1?locations={last_known_lat},{last_known_lon}', timeout=15)
-            # Real-time wind from Open-Meteo Forecast API (same source as Wind Map)
-            r3 = requests.get(f'https://api.open-meteo.com/v1/forecast?latitude={last_known_lat}&longitude={last_known_lon}&current=wind_speed_10m,wind_direction_10m&wind_speed_unit=kn', timeout=15)
-            meteo_data = {"marine": {}, "depth": 0, "updated": time.time()}
-            if r.status_code == 200:
-                meteo_data["marine"] = r.json().get('current', {})
-            if r2.status_code == 200:
-                res = r2.json().get('results', [])
-                if res: meteo_data["depth"] = res[0].get("elevation", 0)
-            if r3.status_code == 200:
-                wind_cur = r3.json().get('current', {})
-                meteo_data["wind"] = {
-                    "speed_kn":  wind_cur.get('wind_speed_10m'),
-                    "dir_deg":   wind_cur.get('wind_direction_10m'),
-                }
-                log(f"Meteo Worker: Wind {meteo_data['wind']['speed_kn']}kn @ {meteo_data['wind']['dir_deg']}deg")
-            with open(METEO_CACHE_FILE, "w") as f:
-                json.dump(meteo_data, f)
-            log("Meteo Worker: Cached current sea state, bathymetry and wind.")
-        except Exception as e:
-            log(f"Meteo Worker Err: {e}")
-        time.sleep(1800)
-
-threading.Thread(target=meteo_worker, daemon=True).start()
 
 def get_navarea(lat, lon):
     """
@@ -1820,34 +1748,6 @@ weather_cache_lock = threading.Lock()
 adsb_radar_cache = {}
 adsb_radar_cache_lock = threading.Lock()
 _ADSB_PREWARM_ZOOMS = [6, 7, 8, 9, 10, 11]   # z=6Ã¢â€°Ë†200nm  z=8Ã¢â€°Ë†50nm(def)  z=11Ã¢â€°Ë†5nm
-
-def weather_prewarm_worker():
-    """Background thread: pre-generates maps at zoom levels 4, 6, 8 every 5 minutes."""
-    import io
-    PREWARM_ZOOMS = [4, 6, 8]
-    while True:
-        try:
-            time.sleep(10)  # Wait for proxy to fully initialize before first run
-            for z in PREWARM_ZOOMS:
-                try:
-                    lat = last_known_lat or -38.487
-                    lon = last_known_lon or 145.620
-                    img = fetch_stitched_map(lat, lon, z, 260, 260)
-                    buf = io.BytesIO()
-                    img.save(buf, format='JPEG', quality=35, optimize=True)
-                    img_bytes = buf.getvalue()
-                    with weather_cache_lock:
-                        weather_cache[z] = {"time": time.time(), "img": img_bytes, "lat": round(lat, 1), "lon": round(lon, 1)}
-                    log(f"WX Pre-warm: z={z} -> {len(img_bytes)} bytes")
-                except Exception as e:
-                    import traceback
-                    log(f"WX Pre-warm z={z} failed: {e}\n{traceback.format_exc()}")
-        except Exception as e:
-            log(f"WX Pre-warm worker error: {e}")
-        time.sleep(290)  # Re-generate every 5 minutes
-
-threading.Thread(target=weather_prewarm_worker, daemon=True).start()
-
 
 def adsb_radar_prewarm_worker():
     """
@@ -8559,72 +8459,6 @@ def satellite_map(dummy=None):
     except Exception as e:
         log(f"satellite_map error: {e}")
         return make_response(f"err: {e}", 500)
-    import io as _io, math as _math
-    from PIL import Image
-    try:
-        z   = int(request.args.get('z', 11))
-        w   = int(request.args.get('w', 454))
-        h   = int(request.args.get('h', 454))
-        lat = float(request.args.get('lat', last_known_lat or -38.5))
-        lon = float(request.args.get('lon', last_known_lon or 145.6))
-        z   = max(6, min(z, 14))
-
-        TILE_SZ = 256
-        n  = 2 ** z
-        cx, cy   = _latlng_to_tilexy(lat, lon, z)
-        cx_i, cy_i = int(cx), int(cy)
-        off_x = int((cx - cx_i) * TILE_SZ)
-        off_y = int((cy - cy_i) * TILE_SZ)
-        pad  = _math.ceil(max(w, h) / 2 / TILE_SZ) + 1
-        side = (2 * pad + 1) * TILE_SZ
-        canvas = Image.new("RGB", (side, side), (12, 12, 18))
-
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-        def _load(args):
-            dtx, dty = args
-            tx = (cx_i + dtx) % n
-            ty = cy_i + dty
-            if ty < 0 or ty >= n: return dtx, dty, None
-            data = _fetch_sentinel_tile(z, tx, ty)
-            if data:
-                try:
-                    from PIL import Image as _Im
-                    import io as _io2
-                    return dtx, dty, _Im.open(_io2.BytesIO(data)).convert("RGB")
-                except Exception: pass
-            return dtx, dty, None
-
-        coords = [(dtx, dty) for dty in range(-pad, pad+1) for dtx in range(-pad, pad+1)]
-        with ThreadPoolExecutor(max_workers=16) as ex:
-            for dtx, dty, img in ex.map(_load, coords):
-                if img:
-                    canvas.paste(img, ((dtx + pad) * TILE_SZ, (dty + pad) * TILE_SZ))
-
-        # Crop centred on vessel
-        cpx  = pad * TILE_SZ + off_x
-        cpy  = pad * TILE_SZ + off_y
-        left = max(0, min(cpx - w // 2, side - w))
-        top  = max(0, min(cpy - h // 2, side - h))
-        out  = canvas.crop((left, top, left + w, top + h))
-
-        # Vessel marker
-        from PIL import ImageDraw
-        draw = ImageDraw.Draw(out)
-        mx, my, s = w // 2, h // 2, 5
-        draw.polygon([(mx, my-s),(mx+s, my),(mx, my+s),(mx-s, my)], fill=(0,255,0), outline=(0,0,0))
-        draw.rectangle([0, 0, w, 13], fill=(0,0,0))
-        draw.text((3, 2), f"SAT  {lat:.3f}  {lon:.3f}  Z{z}", fill=(0,220,255))
-
-        buf = _io.BytesIO()
-        out.save(buf, format="JPEG", quality=85)
-        resp = make_response(buf.getvalue())
-        resp.headers.set("Content-Type", "image/jpeg")
-        resp.headers.set("Content-Length", str(len(buf.getvalue())))
-        resp.headers.set("Cache-Control", "max-age=900")
-        return resp
-    except Exception as e:
-        log(f"satellite_map error: {e}")
-        return make_response(f"err: {e}", 500)
 
 # ── Satellite + AIS overlay map ──────────────────────────────────────────────
 @app.route('/sat_ais_map')
@@ -8702,7 +8536,7 @@ def sat_ais_map(dummy=None):
         # Draw AIS contacts from global cache
         try:
             import json as _json
-            ais_data = ais_cache if isinstance(ais_cache, list) else []
+            ais_data = live_ais_cache.values() if isinstance(live_ais_cache, dict) else []
             for vessel in ais_data:
                 try:
                     vlat = float(vessel.get('lat', 0))
