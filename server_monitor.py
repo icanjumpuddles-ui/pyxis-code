@@ -8,7 +8,7 @@ from datetime import datetime
 
 # Configuration
 SERVICE_NAME = "manta-proxy.service"
-CHECK_URL = "https://localhost:443/status_api"
+CHECK_URL = os.environ.get("CHECK_URL", "https://localhost:443/status_api")
 MAX_RAM_PERCENT = 85.0
 CHECK_INTERVAL = 30 # Seconds
 BOOT_GRACE_PERIOD = 90 # Seconds to allow Kokoro/Ruby to wake up

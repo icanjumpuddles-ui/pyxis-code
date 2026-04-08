@@ -12,7 +12,7 @@ Run on VM alongside mantasim_headless.py:
   nohup python3 wargame_blockade_au.py >> wargame.log 2>&1 &
 ============================================================
 """
-import math, time, random, threading, requests, json
+import math, time, random, threading, requests
 from datetime import datetime, timezone
 
 # ── Config ──────────────────────────────────────────────────────────────────

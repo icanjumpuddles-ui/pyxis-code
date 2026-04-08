@@ -23,8 +23,9 @@ from PIL import Image, ImageTk, ImageDraw, ImageFont
 import json
 import time
 import math
+import os
 
-PROXY = "https://benfishmanta.duckdns.org"
+PROXY = os.environ.get("PYXIS_PROXY_URL", "https://benfishmanta.duckdns.org")
 
 # ── Exact menu tree from PyxisMainMenu in Garminbenfish.mc ───────────────────
 MENU = [

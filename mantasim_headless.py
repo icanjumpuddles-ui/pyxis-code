@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Benjamin Pullin. All rights reserved.
 # Headless Simulator Environment for Reinforcement Learning
 import numpy as np
-import math, time, random, threading, requests
+import os, math, time, random, threading, requests
 from datetime import datetime
 
 # --- System Parameters & Config ---
@@ -144,7 +144,7 @@ AUTOPILOT_PATHS = [
 REMOTE_URL = "https://benfishmanta.duckdns.org/sim_ingress"
 STATUS_URL = "https://benfishmanta.duckdns.org/status_api"
 GEMINI_URL = "https://benfishmanta.duckdns.org/gemini"
-AUTH_TOKEN = "BENFISH_ACTUAL_77X"
+AUTH_TOKEN = os.getenv("PYXIS_AUTH_TOKEN")
 
 # --- Shared State ---
 watch_uuv_state = "RECALL" 
