@@ -303,7 +303,7 @@ class Mothership:
         self.sail_area = 85.0       
         self.rho_air, self.rho_water = 1.225, 1025.0
 
-    def update(self, dt, ocean, t, sea_state, thrust_dir, engine_speed_knots):
+    def _calc_wave_response(self, ocean, t, sea_state):
         px, py, pz = self.pos
         bow_x, bow_z = px + np.sin(self.yaw) * 6.0, pz + np.cos(self.yaw) * 6.0
         stern_x, stern_z = px - np.sin(self.yaw) * 6.0, pz - np.cos(self.yaw) * 6.0
@@ -311,17 +311,13 @@ class Mothership:
         stern_y = ocean.get_exact_height(stern_x, stern_z, t, sea_state)
         mid_y = ocean.get_exact_height(px, pz, t, sea_state)
         
-        F_surge, F_sway, F_heave = 0.0, 0.0, 0.0
-        M_roll, M_pitch, M_yaw = 0.0, 0.0, 0.0
-        
         draft = mid_y - py
-        F_heave += draft * 300000.0 - self.vel[1] * 80000.0        
+        F_heave = draft * 300000.0 - self.vel[1] * 80000.0
         wave_slope = float(np.arctan2(bow_y - stern_y, 12.0))
-        M_pitch += (wave_slope - self.pitch) * 4000000.0 - self.ang_vel[1] * 1500000.0           
-        
-        current_surge = self.vel[0] * np.sin(self.yaw) + self.vel[2] * np.cos(self.yaw)
-        F_surge += (engine_speed_knots * KNOT_TO_MS - current_surge) * 8000.0
-        
+        M_pitch = (wave_slope - self.pitch) * 4000000.0 - self.ang_vel[1] * 1500000.0
+        return F_heave, M_pitch
+
+    def _calc_aero_forces(self):
         true_wind_speed = 15.0 * KNOT_TO_MS
         app_wind_vx, app_wind_vz = 0.0 - self.vel[0], true_wind_speed - self.vel[2]
         app_wind_speed = float(np.linalg.norm([app_wind_vx, app_wind_vz]))
@@ -330,32 +326,52 @@ class Mothership:
         dynamic_pressure = 0.5 * self.rho_air * app_wind_speed**2
         if abs(AWA_rel) > np.radians(35):
             C_lift, C_drag = 1.2 * np.sin(2.0 * AWA_rel), 0.15 + (1.0 - np.cos(AWA_rel))
-        else: C_lift, C_drag = 0.0, 0.4
+        else:
+            C_lift, C_drag = 0.0, 0.4
             
         Lift, Drag = dynamic_pressure * self.sail_area * C_lift, dynamic_pressure * self.sail_area * C_drag
-        F_surge += Lift * np.sin(abs(AWA_rel)) - Drag * np.cos(AWA_rel)
-        F_sway += Lift * np.cos(AWA_rel) * np.sign(AWA_rel) + Drag * np.sin(AWA_rel)
-        
-        boat_sway = self.vel[0] * np.cos(self.yaw) - self.vel[2] * np.sin(self.yaw)
-        F_sway -= boat_sway * abs(boat_sway) * 20000.0 
-        F_surge -= current_surge * abs(current_surge) * 1200.0 
-        
-        M_roll += F_sway * self.mast_height - (self.mass * 9.81 * self.GM * np.sin(self.roll)) - self.ang_vel[2] * 900000.0 
-        if np.linalg.norm(thrust_dir) > 0.01:
-            M_yaw += ((float(np.arctan2(thrust_dir[0], thrust_dir[2])) - self.yaw + np.pi) % (2 * np.pi) - np.pi) * 150000.0
-        M_yaw -= self.ang_vel[0] * 500000.0 
-        
+        F_surge_aero = Lift * np.sin(abs(AWA_rel)) - Drag * np.cos(AWA_rel)
+        F_sway_aero = Lift * np.cos(AWA_rel) * np.sign(AWA_rel) + Drag * np.sin(AWA_rel)
+        return F_surge_aero, F_sway_aero
+
+    def _apply_kinematics(self, dt, F_surge, F_sway, F_heave, M_roll, M_pitch, M_yaw):
         F_global_x = F_surge * np.sin(self.yaw) + F_sway * np.cos(self.yaw)
         F_global_z = F_surge * np.cos(self.yaw) - F_sway * np.sin(self.yaw)
         
         self.vel += np.array([F_global_x / self.mass, (F_heave / self.mass) - 9.81, F_global_z / self.mass]) * dt
         self.pos += self.vel * dt
         self.ang_vel += np.array([M_yaw / self.I_yaw, M_pitch / self.I_pitch, M_roll / self.I_roll]) * dt
-        self.yaw += self.ang_vel[0] * dt; self.pitch += self.ang_vel[1] * dt; self.roll += self.ang_vel[2] * dt
+        self.yaw += self.ang_vel[0] * dt
+        self.pitch += self.ang_vel[1] * dt
+        self.roll += self.ang_vel[2] * dt
         
         ground_height = get_math_depth(self.pos[0], self.pos[2])
         if ground_height > -1.0:
-            self.pos[1] = ground_height; self.vel *= 0.0; self.ang_vel *= 0.0; self.pitch *= 0.95; self.roll *= 0.95
+            self.pos[1] = ground_height
+            self.vel *= 0.0
+            self.ang_vel *= 0.0
+            self.pitch *= 0.95
+            self.roll *= 0.95
+
+    def update(self, dt, ocean, t, sea_state, thrust_dir, engine_speed_knots):
+        F_heave, M_pitch = self._calc_wave_response(ocean, t, sea_state)
+        F_surge_aero, F_sway_aero = self._calc_aero_forces()
+
+        current_surge = self.vel[0] * np.sin(self.yaw) + self.vel[2] * np.cos(self.yaw)
+        F_surge = (engine_speed_knots * KNOT_TO_MS - current_surge) * 8000.0 + F_surge_aero
+        F_sway = F_sway_aero
+
+        boat_sway = self.vel[0] * np.cos(self.yaw) - self.vel[2] * np.sin(self.yaw)
+        F_sway -= boat_sway * abs(boat_sway) * 20000.0
+        F_surge -= current_surge * abs(current_surge) * 1200.0
+
+        M_roll = F_sway * self.mast_height - (self.mass * 9.81 * self.GM * np.sin(self.roll)) - self.ang_vel[2] * 900000.0
+        M_yaw = 0.0
+        if np.linalg.norm(thrust_dir) > 0.01:
+            M_yaw += ((float(np.arctan2(thrust_dir[0], thrust_dir[2])) - self.yaw + np.pi) % (2 * np.pi) - np.pi) * 150000.0
+        M_yaw -= self.ang_vel[0] * 500000.0
+
+        self._apply_kinematics(dt, F_surge, F_sway, F_heave, M_roll, M_pitch, M_yaw)
 
     def get_matrix(self): 
         return euler_matrix(self.yaw, self.pitch, self.roll)
