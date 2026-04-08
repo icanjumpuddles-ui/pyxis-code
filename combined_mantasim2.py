@@ -946,9 +946,9 @@ def post_telemetry(payload):
         except Exception as e:
             print(f"Error packing sonar grid: {e}")
 
-        requests.post(REMOTE_URL, json=payload, headers={"X-Garmin-Auth": AUTH_TOKEN}, timeout=2.0, verify=False)
+        requests.post(REMOTE_URL, json=payload, headers={"X-Garmin-Auth": AUTH_TOKEN}, timeout=2.0)
         
-        r = requests.get(STATUS_URL, timeout=2.0, verify=False)
+        r = requests.get(STATUS_URL, timeout=2.0)
         if r.status_code == 200:
             status_data = r.json()
             server_ts = status_data.get("status_id", 0)
@@ -994,7 +994,7 @@ def post_telemetry(payload):
                 last_audio_ts = server_ts
                 print("DEBUG: Watch triggered a SITREP. Downloading new audio...")
                 bust = int(time.time() * 1000)
-                audio_r = requests.get(f"{AUDIO_URL}?type=status&t={bust}", verify=False, timeout=10)
+                audio_r = requests.get(f"{AUDIO_URL}?type=status&t={bust}", timeout=10)
                 if audio_r.status_code == 200:
                     temp_filename = "ruby_temp.wav"
                     with open(temp_filename, "wb") as f: f.write(audio_r.content)
@@ -1010,7 +1010,7 @@ def poll_proxy_live_data():
     global proxy_online
     while True:
         try:
-            r = requests.get(STATUS_URL, headers={"X-Garmin-Auth": AUTH_TOKEN}, timeout=5.0, verify=False)
+            r = requests.get(STATUS_URL, headers={"X-Garmin-Auth": AUTH_TOKEN}, timeout=5.0)
             if r.status_code == 200:
                 d = r.json()
                 with proxy_lock:
@@ -1136,7 +1136,7 @@ def run_unified_sim():
 
     # --- Startup: Sync position from proxy ---
     try:
-        _r = requests.get(STATUS_URL, timeout=4.0, verify=False)
+        _r = requests.get(STATUS_URL, timeout=4.0)
         if _r.status_code == 200:
             _d = _r.json()
             _blat = float(_d.get("BOAT_LAT") or _d.get("lat") or BOAT_START[0])
