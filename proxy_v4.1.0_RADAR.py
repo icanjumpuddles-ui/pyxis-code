@@ -158,17 +158,24 @@ def _init_intel_db():
     except Exception as e:
         print(f"[Pyxis] Intel DB init error: {e}")
 
+_intel_name_memcache = {}
+
 def intel_name_get(mmsi: str) -> str:
     """Return cached vessel name for MMSI, or empty string if not known."""
+    if mmsi in _intel_name_memcache:
+        return _intel_name_memcache[mmsi]
     try:
         con = sqlite3.connect(INTEL_DB); cur = con.execute(
             "SELECT name FROM vessel_names WHERE mmsi=?", (mmsi,))
         row = cur.fetchone(); con.close()
-        return row[0] if row else ""
+        val = row[0] if row else ""
+        _intel_name_memcache[mmsi] = val
+        return val
     except: return ""
 
 def intel_name_put(mmsi: str, name: str):
     """Persist a vessel name learned from ShipStaticData. Upserts safely."""
+    _intel_name_memcache[mmsi] = name
     try:
         con = sqlite3.connect(INTEL_DB)
         con.execute("INSERT OR REPLACE INTO vessel_names (mmsi,name,updated) VALUES(?,?,?)",
