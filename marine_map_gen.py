@@ -70,7 +70,7 @@ MAINTAINER NOTES (2026)
   - VERSION constant is stamped top-left of every generated image for debugging.
 """
 
-import os, sys, json, time, math, colorsys, shutil
+import os, json, time, math, colorsys, shutil
 import urllib.request, io
 import requests
 
