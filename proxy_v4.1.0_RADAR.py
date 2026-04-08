@@ -41,7 +41,11 @@ from kokoro_onnx import Kokoro
 from functools import wraps
 
 def check_auth(username, password):
-    return username == 'admin' and password == 'manta'
+    expected_user = os.getenv('PYXIS_ADMIN_USER', 'admin')
+    expected_pass = os.getenv('PYXIS_ADMIN_PASS')
+    if not expected_pass:
+        return False
+    return username == expected_user and password == expected_pass
 
 def authenticate():
     return Response('Unauthorized Access.', 401, {'WWW-Authenticate': 'Basic realm="Pyxis C2 Terminal"'})
@@ -108,7 +112,7 @@ def intercept_crew_gps():
     except Exception as e:
         pass
 
-B = "/home/icanjumpuddles/manta-comms"
+B = os.environ.get("B", "/home/icanjumpuddles/manta-comms")
 load_dotenv(os.path.join(B, ".env"), override=True)
 DB, DT, SIM, AN = os.path.join(B, "pyxis_logs.db"), os.path.join(B, "latest_sector.json"), os.path.join(B, "sim_telemetry.json"), os.path.join(B, "anchor_state.json")
 ROUTE_FILE = os.path.join(B, "active_route.json")
