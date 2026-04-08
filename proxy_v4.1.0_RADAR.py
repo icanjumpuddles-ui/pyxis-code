@@ -10001,7 +10001,10 @@ if __name__ == '__main__':
 
     cert_path = '/etc/letsencrypt/live/benfishmanta.duckdns.org/fullchain.pem'
     key_path = '/etc/letsencrypt/live/benfishmanta.duckdns.org/privkey.pem'
-    if os.path.exists(cert_path) and os.path.exists(key_path):
+    if os.environ.get('PYXIS_LOCAL') == '1':
+        log("Running in HTTP mode on port 5000 due to PYXIS_LOCAL.")
+        app.run(host='0.0.0.0', port=5000)
+    elif os.path.exists(cert_path) and os.path.exists(key_path):
         app.run(host='0.0.0.0', port=443, ssl_context=(cert_path, key_path))
     else:
         log("SSL certificates not found. Running in HTTP mode on port 5000.")
