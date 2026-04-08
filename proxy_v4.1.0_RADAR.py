@@ -1521,7 +1521,7 @@ def aisstream_worker():
                             mmsi = str(sd.get("UserID", ""))
                             if mmsi:
                                 name = sd.get("Name", "").strip() or mmsi
-                                intel_name_put(mmsi, name)  # Persist to SQLite for future sessions
+                                asyncio.create_task(asyncio.to_thread(intel_name_put, mmsi, name))  # Persist to SQLite non-blockingly for future sessions
                                 destination = sd.get("Destination", "").strip()
                                 callsign = sd.get("CallSign", "").strip()
                                 imo = str(sd.get("ImoNumber", "") or "")
