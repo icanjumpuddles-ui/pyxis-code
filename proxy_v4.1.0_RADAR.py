@@ -22,7 +22,7 @@ MAINTENANCE (Software & AI/Network Engineers):
 - Do not make synchronous/blocking API calls in the main Flask routes; defer to workers or `asyncio.to_thread`.
 - API keys (Gemini, CMEMS, AISStream) must be sourced from the `.env` file; no hardcoded credentials.
 """
-import os, requests, time, json, sqlite3, math, re, sys, threading, queue, textwrap, uuid, socket
+import os, requests, time, json, sqlite3, math, re, sys, threading, queue, textwrap, uuid, socket, concurrent.futures, aiohttp
 import asyncio, websockets
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify, send_file, make_response, Response
@@ -438,11 +438,16 @@ def tile_janitor_worker():
 
 threading.Thread(target=tile_janitor_worker, daemon=True).start()
 
+sys_log = []
+
 def log(msg):
     """
     Standardizes console output for the Pyxis Server by prefixing messages with 'DEBUG:'.
     Flushes stdout immediately so Docker/Systemd journals capture logs in real-time.
     """
+    sys_log.append(msg)
+    if len(sys_log) > 100:
+        sys_log.pop(0)
     print(f"DEBUG: {msg}", flush=True)
 
 log("---> INITIALIZING PYXIS MASTER v4.1.1 (RADAR_OSM)...")
@@ -4716,9 +4721,8 @@ def poll_comms():
     event states, status numbers, and text history logs formatted explicitly
     for the minimal parsing capabilities of Garmin MonkeyC.
     """
-    global force_audio_replay_id, inbox_messages
-    syslog_msg = "\n".join(inbox_messages[-10:]) if inbox_messages else ""
-    d = {"syslog": syslog_msg, "status_id": None, "systems_id": None, "audio_history": []}
+    global force_audio_replay_id
+    d = {"syslog": "\n".join(sys_log[-10:]), "status_id": None, "systems_id": None, "audio_history": []}
     try:
         if os.path.exists(DT):
             with open(DT, "r") as f: st = json.load(f)
@@ -5420,7 +5424,7 @@ THREAT: [NONE/LOW/MEDIUM/HIGH — tactical threat assessment reason, max 100 cha
         try: la_r, lo_r = round(float(la), 6), round(float(lo), 6)
         except: la_r, lo_r = -39.1124, 146.471
 
-        def async_gen():
+        async def async_gen():
             nonlocal sens, la, lo, rtype, task_id, la_r, lo_r
             dtg_str = datetime.now(timezone.utc).strftime("%d%H%MZ %b %y").upper()
             prefixes = f"[{dtg_str[:6]} SYS]"
@@ -5564,8 +5568,12 @@ THREAT: [NONE/LOW/MEDIUM/HIGH — tactical threat assessment reason, max 100 cha
                 weather_block = "Marine Data API Unavailable."
                 try:
                     # Use current position for localized weather
-                    w_res = requests.get(f"https://api.open-meteo.com/v1/forecast?latitude={la}&longitude={lo}&current=wind_speed_10m,wind_direction_10m,temperature_2m", timeout=3.0).json()
-                    m_res = requests.get(f"https://marine-api.open-meteo.com/v1/marine?latitude={la}&longitude={lo}&current=wave_height,wave_direction,wave_period", timeout=3.0).json()
+                    def _fetch_w(): return requests.get(f"https://api.open-meteo.com/v1/forecast?latitude={la}&longitude={lo}&current=wind_speed_10m,wind_direction_10m,temperature_2m", timeout=3.0).json()
+                    def _fetch_m(): return requests.get(f"https://marine-api.open-meteo.com/v1/marine?latitude={la}&longitude={lo}&current=wave_height,wave_direction,wave_period", timeout=3.0).json()
+                    w_res, m_res = await asyncio.gather(
+                        asyncio.to_thread(_fetch_w),
+                        asyncio.to_thread(_fetch_m)
+                    )
 
                     wnd_spd = w_res.get('current', {}).get('wind_speed_10m', 'N/A')
                     wnd_dir = w_res.get('current', {}).get('wind_direction_10m', 'N/A')
@@ -5613,8 +5621,12 @@ THREAT: [NONE/LOW/MEDIUM/HIGH — tactical threat assessment reason, max 100 cha
             elif rtype == "day_brief":
                 weather_block = "Marine Data API Unavailable."
                 try:
-                    w_res = requests.get(f"https://api.open-meteo.com/v1/forecast?latitude={la_r}&longitude={lo_r}&current=wind_speed_10m,wind_direction_10m,temperature_2m", timeout=3.0).json()
-                    m_res = requests.get(f"https://marine-api.open-meteo.com/v1/marine?latitude={la_r}&longitude={lo_r}&current=wave_height,wave_direction,wave_period", timeout=3.0).json()
+                    def _fetch_w(): return requests.get(f"https://api.open-meteo.com/v1/forecast?latitude={la_r}&longitude={lo_r}&current=wind_speed_10m,wind_direction_10m,temperature_2m,surface_pressure", timeout=3.0).json()
+                    def _fetch_m(): return requests.get(f"https://marine-api.open-meteo.com/v1/marine?latitude={la_r}&longitude={lo_r}&current=wave_height,wave_direction,wave_period", timeout=3.0).json()
+                    w_res, m_res = await asyncio.gather(
+                        asyncio.to_thread(_fetch_w),
+                        asyncio.to_thread(_fetch_m)
+                    )
                     wnd_spd = w_res.get('current', {}).get('wind_speed_10m', 'N/A')
                     wnd_dir = w_res.get('current', {}).get('wind_direction_10m', 'N/A')
                     wv_ht = m_res.get('current', {}).get('wave_height', 'N/A')
@@ -5641,8 +5653,12 @@ THREAT: [NONE/LOW/MEDIUM/HIGH — tactical threat assessment reason, max 100 cha
             elif rtype == "night_brief":
                 weather_block = "Marine Data API Unavailable."
                 try:
-                    w_res = requests.get(f"https://api.open-meteo.com/v1/forecast?latitude={la_r}&longitude={lo_r}&current=wind_speed_10m,wind_direction_10m,temperature_2m", timeout=3.0).json()
-                    m_res = requests.get(f"https://marine-api.open-meteo.com/v1/marine?latitude={la_r}&longitude={lo_r}&current=wave_height,wave_direction,wave_period", timeout=3.0).json()
+                    def _fetch_w(): return requests.get(f"https://api.open-meteo.com/v1/forecast?latitude={la_r}&longitude={lo_r}&current=wind_speed_10m,wind_direction_10m,temperature_2m", timeout=3.0).json()
+                    def _fetch_m(): return requests.get(f"https://marine-api.open-meteo.com/v1/marine?latitude={la_r}&longitude={lo_r}&current=wave_height,wave_direction,wave_period", timeout=3.0).json()
+                    w_res, m_res = await asyncio.gather(
+                        asyncio.to_thread(_fetch_w),
+                        asyncio.to_thread(_fetch_m)
+                    )
                     wnd_spd = w_res.get('current', {}).get('wind_speed_10m', 'N/A')
                     wnd_dir = w_res.get('current', {}).get('wind_direction_10m', 'N/A')
                     wv_ht = m_res.get('current', {}).get('wave_height', 'N/A')
@@ -5669,8 +5685,13 @@ THREAT: [NONE/LOW/MEDIUM/HIGH — tactical threat assessment reason, max 100 cha
             elif rtype == "weather_report":
                 weather_block = "Marine Data API Unavailable."
                 try:
-                    w_res = requests.get(f"https://api.open-meteo.com/v1/forecast?latitude={la_r}&longitude={lo_r}&current=wind_speed_10m,wind_direction_10m,temperature_2m,surface_pressure", timeout=3.0).json()
-                    m_res = requests.get(f"https://marine-api.open-meteo.com/v1/marine?latitude={la_r}&longitude={lo_r}&current=wave_height,wave_direction,wave_period", timeout=3.0).json()
+                    def _fetch_w(): return requests.get(f"https://api.open-meteo.com/v1/forecast?latitude={la_r}&longitude={lo_r}&current=wind_speed_10m,wind_direction_10m,temperature_2m,surface_pressure", timeout=3.0).json()
+                    def _fetch_m(): return requests.get(f"https://marine-api.open-meteo.com/v1/marine?latitude={la_r}&longitude={lo_r}&current=wave_height,wave_direction,wave_period", timeout=3.0).json()
+                    w_res, m_res = await asyncio.gather(
+                        asyncio.to_thread(_fetch_w),
+                        asyncio.to_thread(_fetch_m)
+                    )
+
                     wnd_spd = w_res.get('current', {}).get('wind_speed_10m', 'N/A')
                     wnd_dir = w_res.get('current', {}).get('wind_direction_10m', 'N/A')
                     wv_ht = m_res.get('current', {}).get('wave_height', 'N/A')
@@ -5975,8 +5996,16 @@ THREAT: [NONE/LOW/MEDIUM/HIGH — tactical threat assessment reason, max 100 cha
             
             wnd_spd, wv_ht, temp_c = "NOMINAL", "0.0", "N/A"
             try:
-                w_res = requests.get(f"https://api.open-meteo.com/v1/forecast?latitude={la_r}&longitude={lo_r}&current=wind_speed_10m,wind_direction_10m,temperature_2m", timeout=3.0).json()
-                m_res = requests.get(f"https://marine-api.open-meteo.com/v1/marine?latitude={la_r}&longitude={lo_r}&current=wave_height,wave_direction,wave_period", timeout=3.0).json()
+                def _fetch_w_sys(): return requests.get(f"https://api.open-meteo.com/v1/forecast?latitude={la_r}&longitude={lo_r}&current=wind_speed_10m,wind_direction_10m,temperature_2m", timeout=3.0).json()
+                def _fetch_m_sys(): return requests.get(f"https://marine-api.open-meteo.com/v1/marine?latitude={la_r}&longitude={lo_r}&current=wave_height,wave_direction,wave_period", timeout=3.0).json()
+
+                # We need to run these concurrently but this route is a normal Flask request, not in an event loop
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                    f_w = executor.submit(_fetch_w_sys)
+                    f_m = executor.submit(_fetch_m_sys)
+                    w_res = f_w.result()
+                    m_res = f_m.result()
+
                 wnd_spd = str(w_res.get('current', {}).get('wind_speed_10m', 'NOMINAL')) + "km/h"
                 wv_ht = str(m_res.get('current', {}).get('wave_height', '0.0'))
                 temp_val = w_res.get('current', {}).get('temperature_2m')
@@ -5991,14 +6020,14 @@ THREAT: [NONE/LOW/MEDIUM/HIGH — tactical threat assessment reason, max 100 cha
             task_id = str(uuid.uuid4())
             try: la_r, lo_r = round(float(la), 6), round(float(lo), 6)
             except: la_r, lo_r = -39.1124, 146.471
-            threading.Thread(target=async_gen, daemon=True).start()
+            threading.Thread(target=lambda: asyncio.run(async_gen()), daemon=True).start()
             return jsonify({"watch_summary": "DAY PREP...", "status": "queued", "task_id": task_id}), 200
 
         if msg.startswith("NIGHT_BRIEF"):
             task_id = str(uuid.uuid4())
             try: la_r, lo_r = round(float(la), 6), round(float(lo), 6)
             except: la_r, lo_r = -39.1124, 146.471
-            threading.Thread(target=async_gen, daemon=True).start()
+            threading.Thread(target=lambda: asyncio.run(async_gen()), daemon=True).start()
             return jsonify({"watch_summary": "NIGHT PREP...", "status": "queued", "task_id": task_id}), 200
 
         if msg.startswith("WEATHER_SITREP"):
@@ -6006,7 +6035,7 @@ THREAT: [NONE/LOW/MEDIUM/HIGH — tactical threat assessment reason, max 100 cha
             rtype = "weather_report"
             try: la_r, lo_r = round(float(la), 6), round(float(lo), 6)
             except: la_r, lo_r = -39.1124, 146.471
-            threading.Thread(target=async_gen, daemon=True).start()
+            threading.Thread(target=lambda: asyncio.run(async_gen()), daemon=True).start()
             return jsonify({"watch_summary": "COMPILING WEATHER...", "status": "queued", "task_id": task_id}), 200
 
         if msg.startswith("MOB_REQ"):
@@ -6036,7 +6065,7 @@ THREAT: [NONE/LOW/MEDIUM/HIGH — tactical threat assessment reason, max 100 cha
             rtype = "systems" if "HEALTH" in msg else "status"
         task_id = str(uuid.uuid4())
         
-        threading.Thread(target=async_gen, daemon=True).start()
+        threading.Thread(target=lambda: asyncio.run(async_gen()), daemon=True).start()
         
         return jsonify({"watch_summary": ("SYS INQ" if rtype=="systems" else "TGT LOCKED"), "status": "queued", "task_id": task_id}), 200
     except Exception as e:
@@ -8090,6 +8119,9 @@ _SH_INSTANCE_ID  = "7ba55959-6207-4d1f-9ee7-f418f901bf08"
 _SH_WMS_BASE     = f"https://sh.dataspace.copernicus.eu/ogc/wms/{_SH_INSTANCE_ID}"
 _SH_TILE_CACHE   = os.path.join(_TILE_CACHE_DIR, "sentinel")
 _SH_GDRIVE_CACHE = os.path.join(_GDRIVE_CACHE_DIR, "sentinel")
+
+_sh_session = requests.Session()
+_sh_session.headers.update({"User-Agent": "PyxisManta/4.1"})
 try: os.makedirs(_SH_TILE_CACHE,   exist_ok=True)
 except Exception: pass
 try: os.makedirs(_SH_GDRIVE_CACHE, exist_ok=True)
@@ -8134,8 +8166,7 @@ def _fetch_sentinel_tile(z, tx, ty):
         "MAXCC": "20",   # skip >20% cloud cover
     }
     try:
-        r = requests.get(_SH_WMS_BASE, params=params, timeout=20,
-                         headers={"User-Agent": "PyxisManta/4.1"})
+        r = _sh_session.get(_SH_WMS_BASE, params=params, timeout=20)
         ct = r.headers.get("Content-Type", "")
         if r.status_code == 200 and ct.startswith("image"):
             with open(cp_ssd, "wb") as f: f.write(r.content)
@@ -8704,7 +8735,7 @@ def sat_ais_map(dummy=None):
         # Draw AIS contacts from global cache
         try:
             import json as _json
-            ais_data = list(live_ais_cache.values()) if isinstance(live_ais_cache, dict) else []
+            ais_data = list(live_ais_cache.values())
             for vessel in ais_data:
                 try:
                     vlat = float(vessel.get('lat', 0))
@@ -9074,8 +9105,7 @@ def _fetch_sentinel_region_worker(job_id, bbox, zooms, layer, maxcc):
                 "FORMAT": "image/jpeg", "MAXCC": str(maxcc),
             }
             try:
-                r = requests.get(_SH_WMS_BASE, params=params, timeout=20,
-                                 headers={"User-Agent": "PyxisManta/4.1"})
+                r = _sh_session.get(_SH_WMS_BASE, params=params, timeout=20)
                 ct = r.headers.get("Content-Type","")
                 if r.status_code == 200 and ct.startswith("image"):
                     with open(cp, "wb") as f: f.write(r.content)
@@ -10001,7 +10031,10 @@ if __name__ == '__main__':
 
     cert_path = '/etc/letsencrypt/live/benfishmanta.duckdns.org/fullchain.pem'
     key_path = '/etc/letsencrypt/live/benfishmanta.duckdns.org/privkey.pem'
-    if os.path.exists(cert_path) and os.path.exists(key_path):
+    if os.environ.get('PYXIS_LOCAL') == '1':
+        log("Running in HTTP mode on port 5000 due to PYXIS_LOCAL.")
+        app.run(host='0.0.0.0', port=5000)
+    elif os.path.exists(cert_path) and os.path.exists(key_path):
         app.run(host='0.0.0.0', port=443, ssl_context=(cert_path, key_path))
     else:
         log("SSL certificates not found. Running in HTTP mode on port 5000.")
