@@ -109,16 +109,49 @@ def load_cmems_grid():
     except Exception:
         return None
 
-def nearest_cmems_current(cmems_pts, lat, lon):
-    """Return (speed_kn, dir_deg) from nearest CMEMS grid point, or (0,0)."""
-    if not cmems_pts:
-        return 0.0, 0.0
-    best, best_d = None, float('inf')
-    for p in cmems_pts:
-        d = (p['lat'] - lat) ** 2 + (p['lon'] - lon) ** 2
-        if d < best_d:
-            best_d, best = d, p
-    return (best['speed_kn'], best['dir_deg']) if best else (0.0, 0.0)
+class KDTree:
+    """A lightweight, pure Python 2D K-D Tree for efficient spatial queries."""
+    def __init__(self, points):
+        self.root = self._build(list(points), 0)
+
+    def _build(self, points, depth):
+        if not points:
+            return None
+        axis = depth % 2
+        points.sort(key=lambda p: p['lat'] if axis == 0 else p['lon'])
+        median = len(points) // 2
+        return {
+            'point': points[median],
+            'left': self._build(points[:median], depth + 1),
+            'right': self._build(points[median+1:], depth + 1)
+        }
+
+    def nearest(self, target_lat, target_lon):
+        best = [None, float('inf')]
+
+        def search(node, depth):
+            if node is None:
+                return
+            point = node['point']
+            d = (point['lat'] - target_lat) ** 2 + (point['lon'] - target_lon) ** 2
+            if d < best[1]:
+                best[0], best[1] = point, d
+
+            axis = depth % 2
+            target_coord = target_lat if axis == 0 else target_lon
+            node_coord = point['lat'] if axis == 0 else point['lon']
+
+            next_node = node['left'] if target_coord < node_coord else node['right']
+            other_node = node['right'] if target_coord < node_coord else node['left']
+
+            search(next_node, depth + 1)
+
+            if (target_coord - node_coord) ** 2 < best[1]:
+                search(other_node, depth + 1)
+
+        search(self.root, 0)
+        return best[0]
+
 
 def get_vessel_pos():
     """
@@ -470,6 +503,9 @@ def generate_all_maps():
     # Load CMEMS spatial current grid (optional — gracefully absent)
     cmems_pts = load_cmems_grid()
 
+    # Build a spatial KDTree for fast current lookups
+    cmems_tree = KDTree(cmems_pts) if cmems_pts else None
+
     # Cache marine data per range
     data_cache = {}
 
@@ -480,12 +516,15 @@ def generate_all_maps():
             print(f"  Fetching marine grid range={range_nm}nm pts={grid_pts*grid_pts}...")
             pts = fetch_marine_grid(center_lat, center_lon, range_nm, grid_pts)
             # Overlay CMEMS per-point current vectors when available
-            if pts and cmems_pts:
+            if pts and cmems_tree:
                 for p in pts:
-                    spd, dr = nearest_cmems_current(cmems_pts, p["lat"], p["lon"])
-                    if spd > 0.01:
-                        p["curr_v"]   = spd
-                        p["curr_dir"] = dr
+                    best = cmems_tree.nearest(p["lat"], p["lon"])
+                    if best:
+                        spd = best.get("speed_kn", 0.0)
+                        dr = best.get("dir_deg", 0.0)
+                        if spd > 0.01:
+                            p["curr_v"]   = spd
+                            p["curr_dir"] = dr
             data_cache[key] = pts
         points = data_cache[key]
         print(f"  Rendering z{watch_z} (CartoDB z={carto_z})...")

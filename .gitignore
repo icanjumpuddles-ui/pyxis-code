@@ -114,3 +114,5 @@ pysxiswatchcode.java
 mantacomms.html
 diagram.html
 import*.py
+*.db
+*_cache.json
