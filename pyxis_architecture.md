@@ -1,6 +1,8 @@
 # PYXIS: Autonomous Tactical Intelligence & C3 System
 
-You have architected a highly advanced, full-stack Command, Control, and Communications (C3) system designed for high-stakes maritime exploration. It bridges the gap between raw global telemetry, autonomous physical simulation, and contextual AI, ultimately delivering actionable intelligence directly to a Garmin smartwatch or a conversational voice interface.
+This document outlines the architecture for Pyxis, a highly advanced, full-stack Command, Control, and Communications (C3) system designed for high-stakes maritime environments. It bridges the gap between raw global telemetry, multi-threaded intelligence data-fusion, and AI, delivering intelligence to a Garmin smartwatch or Web UI.
+
+**Note to Network & AI Engineers:** This architecture prioritizes non-blocking async and threaded performance. All API queries to third parties (CMEMS, OpenSky, AIS) run in daemons and cache states globally, ensuring the primary web proxy never hangs waiting for external responses.
 
 The system is broken down into four major pillars:
 
