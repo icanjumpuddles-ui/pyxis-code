@@ -6388,8 +6388,9 @@ def update_scenario():
 def kill_sim():
     """Web UI Hook to securely terminate the headless simulator and restore the physical watch."""
     import os
-    os.system("pkill -f hs.py")
-    os.system("pkill -f headless_sim.py")
+    import subprocess
+    subprocess.run(["pkill", "-f", "hs.py"])
+    subprocess.run(["pkill", "-f", "headless_sim.py"])
     if os.path.exists(SIM): os.remove(SIM)
     return jsonify({"status": "terminated"})
 
