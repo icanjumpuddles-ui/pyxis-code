@@ -4716,8 +4716,9 @@ def poll_comms():
     event states, status numbers, and text history logs formatted explicitly
     for the minimal parsing capabilities of Garmin MonkeyC.
     """
-    global force_audio_replay_id
-    d = {"syslog": "\n".join(sys_log[-10:]), "status_id": None, "systems_id": None, "audio_history": []}
+    global force_audio_replay_id, inbox_messages
+    syslog_msg = "\n".join(inbox_messages[-10:]) if inbox_messages else ""
+    d = {"syslog": syslog_msg, "status_id": None, "systems_id": None, "audio_history": []}
     try:
         if os.path.exists(DT):
             with open(DT, "r") as f: st = json.load(f)
@@ -8703,7 +8704,7 @@ def sat_ais_map(dummy=None):
         # Draw AIS contacts from global cache
         try:
             import json as _json
-            ais_data = ais_cache if isinstance(ais_cache, list) else []
+            ais_data = list(live_ais_cache.values()) if isinstance(live_ais_cache, dict) else []
             for vessel in ais_data:
                 try:
                     vlat = float(vessel.get('lat', 0))
