@@ -4,6 +4,9 @@
 # Run from: /home/icanjumpuddles/manta-comms/
 # v1.4: removed set -e; added disown; cmems_worker kill; -u flag on all python3
 
+# Give a short delay to allow calling HTTP response to return
+sleep 1
+
 BASE="/home/icanjumpuddles/manta-comms"
 HOME_DIR="/home/icanjumpuddles"
 LOG="$BASE/restart_clean.log"

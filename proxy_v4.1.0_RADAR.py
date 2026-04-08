@@ -6387,9 +6387,9 @@ def update_scenario():
 @app.route('/kill_sim', methods=['POST'])
 def kill_sim():
     """Web UI Hook to securely terminate the headless simulator and restore the physical watch."""
-    import os
-    os.system("pkill -f hs.py")
-    os.system("pkill -f headless_sim.py")
+    import os, subprocess
+    subprocess.run(["pkill", "-f", "hs.py"], capture_output=True)
+    subprocess.run(["pkill", "-f", "headless_sim.py"], capture_output=True)
     if os.path.exists(SIM): os.remove(SIM)
     return jsonify({"status": "terminated"})
 
@@ -7484,8 +7484,8 @@ def restart_all_endpoint():
     try:
         import subprocess
         # Give a short delay to allow HTTP response to return before killing proxy
-        script = 'sleep 1 && sudo /home/icanjumpuddles/manta-comms/restart_clean.sh'
-        subprocess.Popen(script, shell=True, start_new_session=True)
+        # Delay is handled within restart_clean.sh
+        subprocess.Popen(['sudo', '/home/icanjumpuddles/manta-comms/restart_clean.sh'], start_new_session=True)
         return jsonify({"status": "restarting"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
