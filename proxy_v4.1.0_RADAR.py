@@ -3,25 +3,24 @@
 PYXIS PROXY SERVER v4.1.1 - (WIND MAP ENABLED)
 ===================================================
 PURPOSE:
-This core server acts as the primary data fusion bridge for the Pyxis suite.
-It intercepts and processes 3 independent incoming data streams:
-1. Live physical sensor telemetry from the Garmin Watch (GPS, HR, Barometric)
-2. Live global Marine AIS traffic (from AISStream / OpenMarine)
-3. Live global Geopolitical & Thermal Satellite intelligence (GDELT / FIRMS)
+This core server acts as the central Network/AI data fusion bridge for the Pyxis C3 suite.
+It intercepts, synchronizes, and caches three distinct data streams via background threads:
+1. Live physical sensor telemetry (NMEA 2000 / Garmin Watch) via REST POST (`/telemetry`).
+2. Live global Marine AIS & ADSB traffic (AISStream WebSocket / OpenSky REST).
+3. Live Geopolitical & Thermal Intelligence (GDELT / FIRMS / CMEMS) via scheduled HTTP polls.
 
 ARCHITECTURE:
-All incoming streams are synchronized and fused into a unified simulated BVR 
-(Beyond Visual Range) radar picture. It interfaces directly with Google 
-Gemini (LLM) to perform localized threat analysis against those fused contacts.
-Finally, the AI's tactical threat assessments are synthesized into human 
-voice reports via Kokoro/ElevenLabs and beamed back to the physical watch 
-client and the Pyxis Lite web dashboards.
+- The system employs a multi-threaded daemon architecture to prevent blocking the main Flask HTTP server.
+- All streams are fused into an in-memory JSON "State Vector" (`/status_api`).
+- Gemini 2.5 Flash (LLM) is deeply integrated into the state vector, providing localized tactical analysis.
+- Localized AI synthesis via Kokoro ONNX converts text intelligence into real-time audio SITREPs.
+- A 3-Tier Map Engine (Local SSD -> GDrive FUSE mount -> Public API) provides hyper-resilient tile caching for network-denied environments.
 
-MAINTENANCE:
-Future engineers maintaining this code should note the threading model:
-`geo_worker` maintains the physical navigation warnings and AIS feeds.
-`osint_worker` maintains the geopolitical news and thermal satellites.
-Both use the `/status_api` JSON dict as a universal data bus.
+MAINTENANCE (Software & AI/Network Engineers):
+- Threading: `adsb_worker` (Aviation), `geo_worker` (AIS), `osint_worker` (Threats), `cmems_worker` (Oceanography).
+- All background threads communicate via thread-safe global dicts (e.g., `status_api`, `live_ais_cache`).
+- Do not make synchronous/blocking API calls in the main Flask routes; defer to workers or `asyncio.to_thread`.
+- API keys (Gemini, CMEMS, AISStream) must be sourced from the `.env` file; no hardcoded credentials.
 """
 import os, requests, time, json, sqlite3, math, re, sys, threading, queue, textwrap, uuid, socket
 import asyncio, websockets
