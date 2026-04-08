@@ -17,7 +17,7 @@ warnings.filterwarnings("ignore", message="Unverified HTTPS request")
 # Useful for testing Watch UI elements offline without the full Pygame.
 # ======================================================================
 
-PROXY_URL = "https://localhost:443/telemetry"
+PROXY_URL = os.environ.get("PROXY_URL", "https://localhost:443/telemetry")
 
 def generate_sonar_grid(tick):
     """Generates a 10x10 sonar depth mesh with a rolling wave effect."""
