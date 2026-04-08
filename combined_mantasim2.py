@@ -3,7 +3,7 @@ import pygame
 import numpy as np
 from OpenGL.GL import *
 from OpenGL.GLU import *
-import math, time, random, threading, requests
+import os, math, time, random, threading, requests
 from datetime import datetime
 
 # --- System Parameters & Config ---
@@ -165,7 +165,7 @@ REMOTE_URL = "https://benfishmanta.duckdns.org/sim_ingress"
 STATUS_URL = "https://benfishmanta.duckdns.org/status_api"
 GEMINI_URL = "https://benfishmanta.duckdns.org/gemini"
 AUDIO_URL = "https://benfishmanta.duckdns.org/audio"
-AUTH_TOKEN = "BENFISH_ACTUAL_77X"
+AUTH_TOKEN = os.getenv("PYXIS_AUTH_TOKEN")
 
 # --- Shared State ---
 last_audio_ts = 0
