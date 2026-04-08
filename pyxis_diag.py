@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Pyxis VM API Diagnostic - plain text output, no colour codes"""
-import requests, json, time, os, sys
+import requests, json, time, os
 
 la, lo = -38.487, 145.620   # read from state file if possible
 PROXY = "https://127.0.0.1:443"
