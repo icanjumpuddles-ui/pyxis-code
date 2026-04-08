@@ -7871,7 +7871,7 @@ def weather_map(z_param=None, cb=None):
     response = make_response(img_data)
     response.headers.set('Content-Type', 'image/jpeg')
     
-    # KNOWN GARMIN API BUG: The Garmin Connect AWS proxy aggressively drops 'Chunked' image transfers.
+    # GARMIN API WORKAROUND: The Garmin Connect AWS proxy aggressively drops 'Chunked' image transfers.
     # We must rigorously calculate the buffer byte-length and force the HTTP Content-Length header,
     # otherwise the watch will receive a 404 proxy abort.
     response.headers.set('Content-Length', str(len(img_data)))
