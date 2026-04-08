@@ -1,5 +1,5 @@
 import numpy as np
-import math, json, requests, threading, random, uuid
+import math, requests, threading, random, uuid
 from datetime import datetime
 import os
 import sqlite3
