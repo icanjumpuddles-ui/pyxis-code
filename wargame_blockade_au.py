@@ -12,14 +12,16 @@ Run on VM alongside mantasim_headless.py:
   nohup python3 wargame_blockade_au.py >> wargame.log 2>&1 &
 ============================================================
 """
-import math, time, random, threading, requests, json
+import math, time, random, threading, requests, json, os
 from datetime import datetime, timezone
 
 # ── Config ──────────────────────────────────────────────────────────────────
 PROXY_BASE    = "https://benfishmanta.duckdns.org"
 STATUS_URL    = f"{PROXY_BASE}/status_api"
 INGRESS_URL   = f"{PROXY_BASE}/sim_ingress"
-AUTH_TOKEN    = "BENFISH_ACTUAL_77X"
+AUTH_TOKEN    = os.getenv("PYXIS_AUTH_TOKEN")
+if not AUTH_TOKEN:
+    raise ValueError("PYXIS_AUTH_TOKEN environment variable not set")
 HEADERS       = {"X-Garmin-Auth": AUTH_TOKEN, "Content-Type": "application/json"}
 PUSH_INTERVAL = 3.0   # seconds between telemetry pushes
 HZ            = 5.0   # physics update rate
