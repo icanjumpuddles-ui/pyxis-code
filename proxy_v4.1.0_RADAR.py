@@ -8119,6 +8119,9 @@ _SH_INSTANCE_ID  = "7ba55959-6207-4d1f-9ee7-f418f901bf08"
 _SH_WMS_BASE     = f"https://sh.dataspace.copernicus.eu/ogc/wms/{_SH_INSTANCE_ID}"
 _SH_TILE_CACHE   = os.path.join(_TILE_CACHE_DIR, "sentinel")
 _SH_GDRIVE_CACHE = os.path.join(_GDRIVE_CACHE_DIR, "sentinel")
+
+_sh_session = requests.Session()
+_sh_session.headers.update({"User-Agent": "PyxisManta/4.1"})
 try: os.makedirs(_SH_TILE_CACHE,   exist_ok=True)
 except Exception: pass
 try: os.makedirs(_SH_GDRIVE_CACHE, exist_ok=True)
@@ -8163,8 +8166,7 @@ def _fetch_sentinel_tile(z, tx, ty):
         "MAXCC": "20",   # skip >20% cloud cover
     }
     try:
-        r = requests.get(_SH_WMS_BASE, params=params, timeout=20,
-                         headers={"User-Agent": "PyxisManta/4.1"})
+        r = _sh_session.get(_SH_WMS_BASE, params=params, timeout=20)
         ct = r.headers.get("Content-Type", "")
         if r.status_code == 200 and ct.startswith("image"):
             with open(cp_ssd, "wb") as f: f.write(r.content)
@@ -9103,8 +9105,7 @@ def _fetch_sentinel_region_worker(job_id, bbox, zooms, layer, maxcc):
                 "FORMAT": "image/jpeg", "MAXCC": str(maxcc),
             }
             try:
-                r = requests.get(_SH_WMS_BASE, params=params, timeout=20,
-                                 headers={"User-Agent": "PyxisManta/4.1"})
+                r = _sh_session.get(_SH_WMS_BASE, params=params, timeout=20)
                 ct = r.headers.get("Content-Type","")
                 if r.status_code == 200 and ct.startswith("image"):
                     with open(cp, "wb") as f: f.write(r.content)
