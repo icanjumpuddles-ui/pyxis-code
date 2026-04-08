@@ -515,9 +515,6 @@ def _nm_distance(lat1, lon1, lat2, lon2):
          math.sin(dlon/2)**2)
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
-def _is_fallback(lat, lon):
-    return abs(lat - FALLBACK_LAT) < 0.01 and abs(lon - FALLBACK_LON) < 0.01
-
 if __name__ == "__main__":
     print(f"{'='*50}")
     print(f"Pyxis Marine Map Generator {VERSION} started")
