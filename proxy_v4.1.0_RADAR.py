@@ -7483,9 +7483,14 @@ def sys_diagnostics():
 def restart_all_endpoint():
     try:
         import subprocess
+        import threading
+        import time
         # Give a short delay to allow HTTP response to return before killing proxy
-        script = 'sleep 1 && sudo /home/icanjumpuddles/manta-comms/restart_clean.sh'
-        subprocess.Popen(script, shell=True, start_new_session=True)
+        def _delayed_restart():
+            time.sleep(1)
+            subprocess.Popen(['sudo', '/home/icanjumpuddles/manta-comms/restart_clean.sh'], start_new_session=True)
+
+        threading.Thread(target=_delayed_restart).start()
         return jsonify({"status": "restarting"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
