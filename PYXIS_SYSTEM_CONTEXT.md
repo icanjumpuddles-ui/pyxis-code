@@ -1,7 +1,10 @@
 # PYXIS TACTICAL SYSTEM — AI SESSION CONTEXT DOCUMENT
-*Last updated: 2026-03-29. Read this FULLY before touching any code.*
+*Last updated: 2026-04-08. Read this FULLY before touching any code.*
 
 ---
+
+## EXECUTIVE SUMMARY (For Software & Network/AI Engineers)
+Pyxis is a highly-available, multi-threaded Command, Control, and Communications (C3) system designed for maritime environments. The core of the system is a Python Flask proxy (`proxy_v4.1.0_RADAR.py`) that acts as an intelligence fusion hub. It aggregates and caches physical vessel telemetry, global AIS/ADSB streams, satellite data, and OSINT threats. This fused "State Vector" is piped into Gemini 2.5 Flash for tactical analysis and synthesized into voice via an offline ONNX Kokoro TTS model.
 
 ## 1. WHAT PYXIS IS
 
