@@ -80,6 +80,8 @@ def _is_trusted_request():
 
 app = Flask(__name__)
 
+B = os.environ.get('B', "/home/icanjumpuddles/manta-comms")
+
 @app.before_request
 def intercept_crew_gps():
     # ── Global auth gate ──────────────────────────────────────────────
@@ -96,7 +98,7 @@ def intercept_crew_gps():
             if lat_clean and lon_clean:
                 parsed_lat = float(lat_clean)
                 parsed_lon = float(lon_clean)
-                sim_file = os.path.join('/home/icanjumpuddles/manta-comms', 'sim_telemetry.json')
+                sim_file = os.path.join(B, 'sim_telemetry.json')
                 if os.path.exists(sim_file):
                     with open(sim_file, 'r') as f:
                         try: d = json.load(f)
@@ -108,7 +110,6 @@ def intercept_crew_gps():
     except Exception as e:
         pass
 
-B = "/home/icanjumpuddles/manta-comms"
 load_dotenv(os.path.join(B, ".env"), override=True)
 DB, DT, SIM, AN = os.path.join(B, "pyxis_logs.db"), os.path.join(B, "latest_sector.json"), os.path.join(B, "sim_telemetry.json"), os.path.join(B, "anchor_state.json")
 ROUTE_FILE = os.path.join(B, "active_route.json")
@@ -9997,5 +9998,11 @@ if __name__ == '__main__':
     threading.Thread(target=system_reporter_worker, daemon=True).start()
     threading.Thread(target=_tile_position_prewarm_worker, daemon=True).start()
 
-    app.run(host='0.0.0.0', port=443, ssl_context=('/etc/letsencrypt/live/benfishmanta.duckdns.org/fullchain.pem', '/etc/letsencrypt/live/benfishmanta.duckdns.org/privkey.pem'))
+    cert_path = '/etc/letsencrypt/live/benfishmanta.duckdns.org/fullchain.pem'
+    key_path = '/etc/letsencrypt/live/benfishmanta.duckdns.org/privkey.pem'
+    if os.path.exists(cert_path) and os.path.exists(key_path):
+        app.run(host='0.0.0.0', port=443, ssl_context=(cert_path, key_path))
+    else:
+        log("SSL certificates not found. Running in HTTP mode on port 5000.")
+        app.run(host='0.0.0.0', port=5000)
 
