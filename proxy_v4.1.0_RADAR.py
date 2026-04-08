@@ -1441,7 +1441,7 @@ def aisstream_worker():
     """
     async def connect_ais():
         global live_ais_cache, last_known_lat, last_known_lon
-        api_key = os.getenv("AISSTREAM_API_KEY", "7d6600c5ac976b25a5f581129cf77332a94a48ab")
+        api_key = os.getenv("AISSTREAM_API_KEY")
         if not api_key:
             log("No AISSTREAM_API_KEY found, skipping live AIS.")
             return
