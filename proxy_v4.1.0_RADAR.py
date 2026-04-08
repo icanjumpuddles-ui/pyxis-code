@@ -439,11 +439,16 @@ def tile_janitor_worker():
 
 threading.Thread(target=tile_janitor_worker, daemon=True).start()
 
+sys_log = []
+
 def log(msg):
     """
     Standardizes console output for the Pyxis Server by prefixing messages with 'DEBUG:'.
     Flushes stdout immediately so Docker/Systemd journals capture logs in real-time.
     """
+    sys_log.append(msg)
+    if len(sys_log) > 100:
+        sys_log.pop(0)
     print(f"DEBUG: {msg}", flush=True)
 
 log("---> INITIALIZING PYXIS MASTER v4.1.1 (RADAR_OSM)...")
@@ -8704,7 +8709,7 @@ def sat_ais_map(dummy=None):
         # Draw AIS contacts from global cache
         try:
             import json as _json
-            ais_data = ais_cache if isinstance(ais_cache, list) else []
+            ais_data = list(live_ais_cache.values())
             for vessel in ais_data:
                 try:
                     vlat = float(vessel.get('lat', 0))
