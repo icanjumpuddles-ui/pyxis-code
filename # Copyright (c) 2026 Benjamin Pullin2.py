@@ -507,85 +507,110 @@ def render_ui_to_opengl(surface, tex_id, screen_w, screen_h):
     glPopMatrix(); glMatrixMode(GL_PROJECTION); glPopMatrix(); glMatrixMode(GL_MODELVIEW)
     glDisable(GL_BLEND); glDisable(GL_TEXTURE_2D); glEnable(GL_DEPTH_TEST)
 
-def run_unified_sim():
-    global BOAT_START, WIDTH, HEIGHT
-    pygame.init()
-    WIDTH, HEIGHT = 1600, 900
-    pygame.display.set_mode((WIDTH, HEIGHT), pygame.OPENGL | pygame.DOUBLEBUF | pygame.RESIZABLE)
-    ui_surface = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-    ui_tex_id = glGenTextures(1)
-    clock = pygame.time.Clock()
-    font = pygame.font.SysFont("monospace", 16)
-    title_font = pygame.font.SysFont("monospace", 18, bold=True)
-    
-    terrain = MantaCoreTerrainGL()
-    ocean = OceanSurfaceGL(480, SCALE*0.833, SHIP_DEPTH)
-    rib = Mothership(0.0, 0.0)
-    vessel_systems = OnboardSystems()
-    
-    yaw, pitch, dist, wave_h, t = 45.0, 20.0, 600.0, 1.5, 0.0
-    ship_speed_knots = 10.0  
-    cruise_active = True
-    sys_state = {"engine": True, "sonar": True, "comms": True}
-    
-    while True:
-        dt = clock.tick(60)/1000.0
-        if dt > 0.1: dt = 0.1
-        t += dt
+class UnifiedSim:
+    def __init__(self):
+        global BOAT_START, WIDTH, HEIGHT
+        pygame.init()
+        WIDTH, HEIGHT = 1600, 900
+        pygame.display.set_mode((WIDTH, HEIGHT), pygame.OPENGL | pygame.DOUBLEBUF | pygame.RESIZABLE)
+        self.ui_surface = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        self.ui_tex_id = glGenTextures(1)
+        self.clock = pygame.time.Clock()
+        self.font = pygame.font.SysFont("monospace", 16)
+        self.title_font = pygame.font.SysFont("monospace", 18, bold=True)
         
-        rx, ry, rz = rib.pos
+        self.terrain = MantaCoreTerrainGL()
+        self.ocean = OceanSurfaceGL(480, SCALE*0.833, SHIP_DEPTH)
+        self.rib = Mothership(0.0, 0.0)
+        self.vessel_systems = OnboardSystems()
         
-        glClearColor(0.008, 0.02, 0.04, 1.0) 
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-        glEnable(GL_DEPTH_TEST)
-        
-        keys = pygame.key.get_pressed()
-        if keys[pygame.K_LEFT]: rib.yaw -= (2.5 * dt)
-        if keys[pygame.K_RIGHT]: rib.yaw += (2.5 * dt)
-        
-        if sys_state.get("engine", True):
-            if keys[pygame.K_UP]: ship_speed_knots = min(ship_speed_knots + (10.0 * dt), 45.0)
-            if keys[pygame.K_DOWN]: ship_speed_knots = max(ship_speed_knots - (15.0 * dt), -10.0)
-        else: ship_speed_knots *= 0.98 
+        self.yaw, self.pitch, self.dist, self.wave_h, self.t = 45.0, 20.0, 600.0, 1.5, 0.0
+        self.ship_speed_knots = 10.0
+        self.cruise_active = True
+        self.sys_state = {"engine": True, "sonar": True, "comms": True}
 
-        eff_speed = ship_speed_knots if cruise_active and sys_state.get("engine", True) else 0.0
-        vessel_systems.update(dt, eff_speed, wave_h, False, sys_state)
-
+    def process_events(self):
         for e in pygame.event.get():
-            if e.type == pygame.QUIT: return
-            if e.type == pygame.MOUSEWHEEL: dist = float(np.clip(dist - e.y*50, 100, 5000))
+            if e.type == pygame.QUIT:
+                return False
+            if e.type == pygame.MOUSEWHEEL:
+                self.dist = float(np.clip(self.dist - e.y*50, 100, 5000))
             if e.type == pygame.KEYDOWN:
-                if e.key == pygame.K_SPACE: cruise_active = not cruise_active
+                if e.key == pygame.K_SPACE:
+                    self.cruise_active = not self.cruise_active
+        return True
 
-        engine_thrust_knots = ship_speed_knots if (sys_state.get("engine", True) and cruise_active) else 0.0
-        rib.update(dt, ocean, t, wave_h, np.zeros(3), engine_thrust_knots)
-        terrain.update_treadmill((rx, ry, rz))
-        ocean.update(rx, rz, t, wave_h)
+    def handle_input(self, dt):
+        keys = pygame.key.get_pressed()
+        if keys[pygame.K_LEFT]: self.rib.yaw -= (2.5 * dt)
+        if keys[pygame.K_RIGHT]: self.rib.yaw += (2.5 * dt)
 
+        if self.sys_state.get("engine", True):
+            if keys[pygame.K_UP]: self.ship_speed_knots = min(self.ship_speed_knots + (10.0 * dt), 45.0)
+            if keys[pygame.K_DOWN]: self.ship_speed_knots = max(self.ship_speed_knots - (15.0 * dt), -10.0)
+        else:
+            self.ship_speed_knots *= 0.98
+
+    def update(self, dt, rx, ry, rz):
+        eff_speed = self.ship_speed_knots if self.cruise_active and self.sys_state.get("engine", True) else 0.0
+        self.vessel_systems.update(dt, eff_speed, self.wave_h, False, self.sys_state)
+
+        engine_thrust_knots = self.ship_speed_knots if (self.sys_state.get("engine", True) and self.cruise_active) else 0.0
+        self.rib.update(dt, self.ocean, self.t, self.wave_h, np.zeros(3), engine_thrust_knots)
+        self.terrain.update_treadmill((rx, ry, rz))
+        self.ocean.update(rx, rz, self.t, self.wave_h)
+        return eff_speed
+
+    def render(self, rx, ry, rz, eff_speed):
         glViewport(0, 0, WIDTH, HEIGHT)
         glMatrixMode(GL_PROJECTION); glLoadIdentity()
         gluPerspective(45, (WIDTH/HEIGHT), 0.1, 60000.0)
         glMatrixMode(GL_MODELVIEW); glLoadIdentity()
         
-        cam_x = np.cos(np.radians(pitch))*np.sin(np.radians(yaw))*dist
-        cam_y = np.sin(np.radians(pitch))*dist
-        cam_z = np.cos(np.radians(pitch))*np.cos(np.radians(yaw))*dist
+        cam_x = np.cos(np.radians(self.pitch))*np.sin(np.radians(self.yaw))*self.dist
+        cam_y = np.sin(np.radians(self.pitch))*self.dist
+        cam_z = np.cos(np.radians(self.pitch))*np.cos(np.radians(self.yaw))*self.dist
         gluLookAt(rx+cam_x, SHIP_DEPTH+cam_y, rz+cam_z, rx, SHIP_DEPTH, rz, 0.0, 1.0, 0.0)
         
-        terrain.render(); ocean.render()
+        self.terrain.render()
+        self.ocean.render()
 
-        glPushMatrix(); glTranslatef(rx, ry, rz)
-        glMultMatrixf(rib.get_matrix().T.flatten())
+        glPushMatrix()
+        glTranslatef(rx, ry, rz)
+        glMultMatrixf(self.rib.get_matrix().T.flatten())
         draw_pyxis_monohull()
         glPopMatrix()
 
-        ui_surface.fill((0,0,0,0))
-        pygame.draw.rect(ui_surface, (2,10,20,200), (0,0,WIDTH,80))
-        ui_surface.blit(title_font.render("50ft VANDSTADT SAILING VESSEL (UNIFIED)", True, (255,100,100)), (30,15))
-        ui_surface.blit(font.render(f"SPD: {eff_speed:.1f} kn | RPM: {vessel_systems.rpms:.0f} | BATT: {vessel_systems.battery_v:.1f}V", True, SONAR_CYAN), (30,45))
+        self.ui_surface.fill((0,0,0,0))
+        pygame.draw.rect(self.ui_surface, (2,10,20,200), (0,0,WIDTH,80))
+        self.ui_surface.blit(self.title_font.render("50ft VANDSTADT SAILING VESSEL (UNIFIED)", True, (255,100,100)), (30,15))
+        self.ui_surface.blit(self.font.render(f"SPD: {eff_speed:.1f} kn | RPM: {self.vessel_systems.rpms:.0f} | BATT: {self.vessel_systems.battery_v:.1f}V", True, SONAR_CYAN), (30,45))
 
-        render_ui_to_opengl(ui_surface, ui_tex_id, WIDTH, HEIGHT)
+        render_ui_to_opengl(self.ui_surface, self.ui_tex_id, WIDTH, HEIGHT)
         pygame.display.flip()
+
+    def run(self):
+        while True:
+            dt = self.clock.tick(60)/1000.0
+            if dt > 0.1: dt = 0.1
+            self.t += dt
+
+            rx, ry, rz = self.rib.pos
+
+            glClearColor(0.008, 0.02, 0.04, 1.0)
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+            glEnable(GL_DEPTH_TEST)
+
+            if not self.process_events():
+                break
+
+            self.handle_input(dt)
+            eff_speed = self.update(dt, rx, ry, rz)
+            self.render(rx, ry, rz, eff_speed)
+
+def run_unified_sim():
+    sim = UnifiedSim()
+    sim.run()
 
 if __name__ == "__main__": 
     run_unified_sim()
