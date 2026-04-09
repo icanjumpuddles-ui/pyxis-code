@@ -1,0 +1,51 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Proxy Server",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/proxy_v4.1.0_RADAR.py",
+            "console": "integratedTerminal",
+            "env": {
+                "PYXIS_LOCAL": "1",
+                "PROXY_URL": "http://localhost:5000/telemetry",
+                "PYXIS_PROXY_URL": "http://localhost:5000",
+                "CHECK_URL": "http://localhost:5000/status_api"
+            }
+        },
+        {
+            "name": "Python: Headless Sim",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/headless_sim.py",
+            "console": "integratedTerminal",
+            "env": {
+                "PROXY_URL": "http://localhost:5000/telemetry",
+                "PYXIS_LOCAL": "1"
+            }
+        },
+        {
+            "name": "Python: Watch Simulator",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/watch_simulator.py",
+            "console": "integratedTerminal",
+            "env": {
+                "PYXIS_PROXY_URL": "http://localhost:5000",
+                "PYXIS_LOCAL": "1"
+            }
+        }
+    ],
+    "compounds": [
+        {
+            "name": "Run All Simulators",
+            "configurations": [
+                "Python: Proxy Server",
+                "Python: Headless Sim",
+                "Python: Watch Simulator"
+            ],
+            "stopAll": true
+        }
+    ]
+}
