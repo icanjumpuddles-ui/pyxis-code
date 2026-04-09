@@ -1,4 +1,5 @@
-with open('proxy_v3.9.3_FINAL.py', 'r', encoding='utf-8') as f:
+import sys
+with open('proxy_v4.1.0_RADAR.py', 'r', encoding='utf-8') as f:
     lines = f.readlines()
 
 out = []
@@ -19,5 +20,5 @@ for line in lines:
     if not skip:
         out.append(line)
 
-with open('proxy_v3.9.3_FINAL.py', 'w', encoding='utf-8') as f:
+with open('proxy_v4.1.0_RADAR.py', 'w', encoding='utf-8') as f:
     f.writelines(out)
