@@ -1,0 +1,3 @@
+1. The user wants to know if they can test the changes by getting the code off GitHub.
+2. I need to commit and push my changes first via the `submit` tool so they appear on GitHub!
+3. I will call `submit` with the appropriate branch name and commit message so the user can pull them down.
