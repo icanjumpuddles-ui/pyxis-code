@@ -1,0 +1,24 @@
+We need to decouple internal HTTP calls.
+
+1. Create a standalone function `calculate_destination(dest, la, lo)` that contains the logic from `set_dest()`.
+2. Update `set_dest()` route to use `calculate_destination(dest, la, lo)`.
+3. Create `calculate_anchorage(la, lo)` for `find_anchorage()`.
+4. Update `find_anchorage()` route.
+5. Create `calculate_ports(la, lo)` for `find_ports()`.
+6. Update `find_ports()` route.
+7. Locate all `requests.post("https://127.0.0.1:443/set_destination"` and replace with `calculate_destination(dest, la, lo)`.
+8. Locate all `requests.post("https://127.0.0.1:443/find_anchorage"` and replace with `calculate_anchorage(la, lo)`.
+9. Locate all `requests.post("https://127.0.0.1:443/find_ports"` and replace with `calculate_ports(la, lo)`.
+10. Wait! Are there any other `127.0.0.1` POST calls?
+Yes, `requests.post("https://127.0.0.1:443/sim_ingress", ...)` in the UUV_CMD block. Let's create `sim_in_logic(payload)` out of `sim_in()` and call it.
+Yes, `requests.post("https://127.0.0.1:443/intel_feed", ...)` in the `INTEL_REQ` block. Create `calculate_intel_feed(la, lo)` out of `intel_feed()` and call it.
+
+Wait, `intel_feed()` function has:
+```python
+def intel_feed():
+    try:
+        data = request.json or {}
+```
+So I can rename it `calculate_intel_feed(data)` and make `intel_feed()` call `calculate_intel_feed(request.json)`.
+
+Let's do this using `replace_with_git_merge_diff`.

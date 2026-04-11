@@ -111,6 +111,10 @@ def intercept_crew_gps():
 
 load_dotenv(os.path.join(B, ".env"), override=True)
 DB, DT, SIM, AN = os.path.join(B, "pyxis_logs.db"), os.path.join(B, "latest_sector.json"), os.path.join(B, "sim_telemetry.json"), os.path.join(B, "anchor_state.json")
+
+from state_manager import PyxisState
+pyxis_state = PyxisState(SIM, DT)
+
 ROUTE_FILE = os.path.join(B, "active_route.json")
 GMDSS_CACHE_FILE = os.path.join(B, "gmdss_cache.json")
 SWPC_CACHE_FILE = os.path.join(B, "swpc_cache.json")
@@ -1133,16 +1137,8 @@ def get_navarea(lat, lon):
     elif lat >= 67: return "XVII" # Arctic
     else: return "UNKNOWN"
 
-@app.route('/intel_feed', methods=['POST'])
-def intel_feed():
-    """
-    Direct HTTP endpoint designed for the Pyxis Lite dashboard.
-    Forces Google Gemini to immediately parse the GMDSS Navigational Warnings
-    cache, isolate the warnings localized to the user's NAVAREA, and synthesize
-    a raw JSON text report breaking down the top 5 kinetic/safety threats.
-    """
+def calculate_intel_feed(data):
     try:
-        data = request.json or {}
         # Read real vessel position from sim telemetry, fall back to last known
         la, lo = last_known_lat, last_known_lon
         sim_sensors = {}
@@ -1330,12 +1326,24 @@ If genuinely no threats exist at this position, return {{"alerts": []}}."""
         
         try:
             res = json.loads(re.search(r'\{.*\}', resp.text, re.DOTALL).group())
-            return jsonify(res), 200
+            return res, 200
         except:
-            return jsonify({"alerts": [{"title": "OSINT Data", "desc": "Feed processing error."}]}), 200
+            return {"alerts": [{"title": "OSINT Data", "desc": "Feed processing error."}]}, 200
     except Exception as e:
         log(f"INTEL FEED ERR: {e}")
-        return jsonify({"error": str(e)}), 500
+        return {"error": str(e)}, 500
+
+@app.route('/intel_feed', methods=['POST'])
+def intel_feed():
+    """
+    Direct HTTP endpoint designed for the Pyxis Lite dashboard.
+    Forces Google Gemini to immediately parse the GMDSS Navigational Warnings
+    cache, isolate the warnings localized to the user's NAVAREA, and synthesize
+    a raw JSON text report breaking down the top 5 kinetic/safety threats.
+    """
+    data = request.json or {}
+    res, status_code = calculate_intel_feed(data)
+    return jsonify(res), status_code
 
 @app.route('/system_status', methods=['POST'])
 @requires_auth
@@ -1622,6 +1630,14 @@ def get_active_ais_list(ref_lat=None, ref_lon=None):
     contacts = sorted(contacts, key=lambda c: (0 if _is_ais_vessel(c) else 1, c.get("range_nm", 9999)))
     return contacts
 
+def calculate_ports(la, lo):
+    client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+    p = f"""Position {la}, {lo}. List up to 5 major marinas/ports within 200nm. Return ONLY JSON: {{"destinations": ["Name", ...]}}"""
+    try:
+        resp = client.models.generate_content(model="gemini-2.5-flash", config=types.GenerateContentConfig(tools=[types.Tool(google_search=types.GoogleSearch())]), contents=p)
+        return json.loads(re.search(r'\{.*\}', resp.text, re.DOTALL).group())
+    except: return {"destinations": ["Scan Failed"]}
+
 @app.route('/find_ports', methods=['POST'])
 def find_ports():
     """
@@ -1630,12 +1646,20 @@ def find_ports():
     repair/refuel range of the current host coordinates.
     """
     la, lo = 25.1527, 55.3896
+    try:
+        data = request.json or {}
+        la = data.get("lat", la)
+        lo = data.get("lon", lo)
+    except: pass
+    return jsonify(calculate_ports(la, lo))
+
+def calculate_anchorage(la, lo):
     client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-    p = f"""Position {la}, {lo}. List up to 5 major marinas/ports within 200nm. Return ONLY JSON: {{"destinations": ["Name", ...]}}"""
+    p = f"""Find 5 nearest safe anchorages to {la}, {lo} for 2.9m draft. Protected from wind. Return ONLY JSON: {{"destinations": ["Name", ...]}}"""
     try:
         resp = client.models.generate_content(model="gemini-2.5-flash", config=types.GenerateContentConfig(tools=[types.Tool(google_search=types.GoogleSearch())]), contents=p)
-        return jsonify(json.loads(re.search(r'\{.*\}', resp.text, re.DOTALL).group()))
-    except: return jsonify({"destinations": ["Scan Failed"]})
+        return json.loads(re.search(r'\{.*\}', resp.text, re.DOTALL).group())
+    except: return {"destinations": ["Scan Failed"]}
 
 @app.route('/find_anchorage', methods=['POST'])
 def find_anchorage():
@@ -1644,13 +1668,12 @@ def find_anchorage():
     the names of 5 well-protected safe anchorages near the physical vessel.
     """
     la, lo = 25.1527, 55.3896
-    client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-    p = f"""Find 5 nearest safe anchorages to {la}, {lo} for 2.9m draft. Protected from wind. Return ONLY JSON: {{"destinations": ["Name", ...]}}"""
     try:
-        resp = client.models.generate_content(model="gemini-2.5-flash", config=types.GenerateContentConfig(tools=[types.Tool(google_search=types.GoogleSearch())]), contents=p)
-        res = json.loads(re.search(r'\{.*\}', resp.text, re.DOTALL).group())
-        return jsonify(res)
-    except: return jsonify({"destinations": ["Scan Failed"]})
+        data = request.json or {}
+        la = data.get("lat", la)
+        lo = data.get("lon", lo)
+    except: pass
+    return jsonify(calculate_anchorage(la, lo))
 
 @app.route('/voice_quota', methods=['POST'])
 def voice_quota():
@@ -1708,15 +1731,7 @@ def dec_to_nmea(dec, is_lat):
     else:
         return f"{deg:03d}{mins:07.4f},{dir_char}"
 
-@app.route('/set_destination', methods=['POST'])
-def set_dest():
-    """
-    Endpoint that accepts a raw string destination name and requests Gemini to 
-    plot a viable 30-waypoint route utilizing pathfinding logic to avoid land 
-    and shallow waters. Saves the final trace to 'active_route.json'.
-    """
-    d = request.json
-    dest, la, lo = d.get("destination"), d.get("lat"), d.get("lon")
+def calculate_destination(dest, la, lo):
     client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
     p = f"""Plot course from {la}, {lo} to {dest}. Use up to 30 waypoints. Avoid land. Consider safe depth contours and maritime hazards. Maintain a safe depth of at least 3m at all times. Return ONLY valid raw JSON: {{"waypoints": [[lat, lon], ...]}}"""
     try:
@@ -1756,8 +1771,22 @@ def set_dest():
                 log(f"NMEA Broadcast Err: {e}")
 
         task_queue.put(("routing", la, lo, "Course plotted to " + dest + " and transmitted to NMEA MFD."))
-        return jsonify({"status": "plotted"})
-    except: return "Err", 500
+        return {"status": "plotted"}
+    except: return {"error": "Err"}
+
+@app.route('/set_destination', methods=['POST'])
+def set_dest():
+    """
+    Endpoint that accepts a raw string destination name and requests Gemini to
+    plot a viable 30-waypoint route utilizing pathfinding logic to avoid land
+    and shallow waters. Saves the final trace to 'active_route.json'.
+    """
+    d = request.json or {}
+    dest, la, lo = d.get("destination"), d.get("lat"), d.get("lon")
+    res = calculate_destination(dest, la, lo)
+    if "error" in res:
+        return "Err", 500
+    return jsonify(res)
 
 @app.route('/clear_route', methods=['POST'])
 def clear_route():
@@ -1986,17 +2015,13 @@ def weather_radar(dummy=None):
     except:
         return "Err", 500
 
-@app.route('/sim_ingress', methods=['POST'])
-def sim_in():
+def sim_in_logic(payload):
     """
-    The main hook for the Pygame Manta Simulator. It receives massive 
-    JSON blocks of simulated BVR (Beyond Visual Range) radar targets 
-    and calculates their relative bearing/distance to the Pyxis host.
+    Calculates relative bearing/distance to Pyxis host from simulated targets.
     Identifies completely new contacts and instantly dispatches them 
     to the 'brain_worker' thread for audio synthesis (contact warnings).
     """
     global known_contacts, last_known_lat, last_known_lon
-    payload = request.json
     payload["last_sim_update"] = time.time()
     
     bLat = payload.get("BOAT_LAT", 0.0)
@@ -2006,8 +2031,7 @@ def sim_in():
     if bLat != 0.0 and bLon != 0.0:
         onboard = False
         try:
-            if os.path.exists(DT):
-                with open(DT,"r") as f: onboard = json.load(f).get("onboard_mode", False)
+            onboard = pyxis_state.get_state("DT").get("onboard_mode", False)
         except: pass
         if not onboard:
             payload["lat"] = bLat
@@ -2034,7 +2058,17 @@ def sim_in():
                 task_queue.put(("systems", c['lat'], c['lon'], report_txt))
                 
     payload.pop("audio_history", None)
-    with open(SIM, "w") as f: json.dump(payload, f)
+    pyxis_state.update_state("SIM", payload, replace=True)
+    return {"status": "OK"}
+
+@app.route('/sim_ingress', methods=['POST'])
+def sim_in():
+    """
+    The main hook for the Pygame Manta Simulator. It receives massive
+    JSON blocks of simulated BVR (Beyond Visual Range) radar targets.
+    """
+    payload = request.json or {}
+    sim_in_logic(payload)
     return "OK", 200
 
 @app.route('/adsb_contacts')
@@ -2795,17 +2829,12 @@ def handle_telem():
             if "BOAT_LAT" in payload: payload["lat"] = payload.pop("BOAT_LAT")
             if "BOAT_LON" in payload: payload["lon"] = payload.pop("BOAT_LON")
             payload["last_sim_update"] = time.time()
-            existing = {}
-            if os.path.exists(SIM):
-                try:
-                    with open(SIM, "r") as f: existing = json.load(f)
-                except: pass
-            existing.update(payload)
-            with open(SIM, "w") as f: json.dump(existing, f)
+            pyxis_state.update_state("SIM", payload)
+            existing = pyxis_state.get_state("SIM")
             # Write last_pos.json for external workers (e.g. adsb_worker)
             try:
-                lat_v = payload.get("lat") or existing.get("lat")
-                lon_v = payload.get("lon") or existing.get("lon")
+                lat_v = existing.get("lat")
+                lon_v = existing.get("lon")
                 if lat_v is not None and lon_v is not None:
                     pos_file = os.path.join(B, "last_pos.json")
                     with open(pos_file, "w") as pf:
@@ -2816,15 +2845,9 @@ def handle_telem():
             return jsonify({"error": str(e)}), 500
             
     try:
-        d = {}
-        if os.path.exists(DT):
-            try:
-                with open(DT,"r") as f: d=json.load(f)
-            except: pass
-        if os.path.exists(SIM):
-            try:
-                with open(SIM,"r") as f: s=json.load(f); d.update(s)
-            except: pass
+        d = pyxis_state.get_state("DT")
+        s = pyxis_state.get_state("SIM")
+        d.update(s)
         return jsonify(d)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -2928,11 +2951,8 @@ def st_api():
     """
     try:
         global last_known_lat, last_known_lon
-        d = {}
-        if os.path.exists(DT):
-            try: 
-                with open(DT,"r") as f: d=json.load(f)
-            except: pass
+
+        d = pyxis_state.get_state("DT")
             
         # UI OVERRIDE: Lock GPS to Captain's Watch
         if d.get("onboard_mode", False):
@@ -2941,41 +2961,33 @@ def st_api():
             last_known_lat = d["lat"]
             last_known_lon = d["lon"]
         
-        if os.path.exists(SIM):
-            try:
-                # MANDATORY FAST-READ FALLBACK:
-                # headless_sim.py writes to this JSON thousands of times per minute.
-                # These try/except blocks prevent 'JSONDecodeError: Extra data' from silently
-                # crashing the status_api thread mid-collision and dropping the audio queue.
-                with open(SIM,"r") as f: s=json.load(f)
-            except: s={}
+        s = pyxis_state.get_state("SIM")
+        s.pop("audio_history", None)
             
-            s.pop("audio_history", None)
+        real_radar = d.get("radar_contacts", [])
+        sim_radar = s.get("radar_contacts", [])
             
-            real_radar = d.get("radar_contacts", [])
-            sim_radar = s.get("radar_contacts", [])
-            
-            import time
-            if s and (time.time() - s.get("last_sim_update", 0) <= 15.0):
-                d.update(s)
-                # Map Headless Sim Boat Coords to Global Pyxis Coords 
-                if not d.get("onboard_mode", False) and d.get("BOAT_LAT", 0.0) != 0.0:
-                    d["lat"] = d["BOAT_LAT"]
-                    d["lon"] = d["BOAT_LON"]
-                    last_known_lat = d["lat"]
-                    last_known_lon = d["lon"]
-                    
-                if real_radar and sim_radar:
-                    d["radar_contacts"] = real_radar + sim_radar
-                elif real_radar:
-                    d["radar_contacts"] = real_radar
-                elif sim_radar:
-                    d["radar_contacts"] = sim_radar
-            else:
-                # Simulator offline -> MOOR PYXIS AUTONOMOUSLY (DECOUPLED FROM WATCH)
-                d["lat"] = last_known_lat
-                d["lon"] = last_known_lon
-                d["radar_contacts"] = real_radar  # STRIP GHOST SIMULATOR RADAR CONTACTS
+        import time
+        if s and (time.time() - s.get("last_sim_update", 0) <= 15.0):
+            d.update(s)
+            # Map Headless Sim Boat Coords to Global Pyxis Coords
+            if not d.get("onboard_mode", False) and d.get("BOAT_LAT", 0.0) != 0.0:
+                d["lat"] = d["BOAT_LAT"]
+                d["lon"] = d["BOAT_LON"]
+                last_known_lat = d["lat"]
+                last_known_lon = d["lon"]
+
+            if real_radar and sim_radar:
+                d["radar_contacts"] = real_radar + sim_radar
+            elif real_radar:
+                d["radar_contacts"] = real_radar
+            elif sim_radar:
+                d["radar_contacts"] = sim_radar
+        else:
+            # Simulator offline -> MOOR PYXIS AUTONOMOUSLY (DECOUPLED FROM WATCH)
+            d["lat"] = last_known_lat
+            d["lon"] = last_known_lon
+            d["radar_contacts"] = real_radar  # STRIP GHOST SIMULATOR RADAR CONTACTS
 
             
         if os.path.exists(GEO_CACHE_FILE):
@@ -4893,18 +4905,18 @@ def gem_trig():
         
         if msg.startswith("SET_DESTINATION:"):
             target = msg.split(":")[1]
-            requests.post("https://127.0.0.1:443/set_destination", json={"destination": target, "lat": la, "lon": lo}, verify=False)
+            calculate_destination(target, la, lo)
             return jsonify({"watch_summary": "RTE CALC...", "status": "queued"}), 200
 
         if msg.startswith("REQ_ROUTE:"):
             target = msg.split(":")[1]
             if target == "ANCHORAGE":
-                 r = requests.post("https://127.0.0.1:443/find_anchorage", json={"lat": la, "lon": lo}, verify=False)
-                 dests = r.json().get("destinations", ["Unknown"]) if r.status_code == 200 else ["Timeout"]
+                 r = calculate_anchorage(la, lo)
+                 dests = r.get("destinations", ["Unknown"])
                  return jsonify({"watch_summary": "SELECT TGT", "destinations": dests}), 200
             elif target == "PORT":
-                 r = requests.post("https://127.0.0.1:443/find_ports", json={"lat": la, "lon": lo}, verify=False)
-                 dests = r.json().get("destinations", ["Unknown"]) if r.status_code == 200 else ["Timeout"]
+                 r = calculate_ports(la, lo)
+                 dests = r.get("destinations", ["Unknown"])
                  return jsonify({"watch_summary": "SELECT TGT", "destinations": dests}), 200
         if msg.startswith("VIEW_NAV:"):
             task_id = str(uuid.uuid4())
@@ -5888,7 +5900,7 @@ THREAT: [NONE/LOW/MEDIUM/HIGH — tactical threat assessment reason, max 100 cha
             cmd_payload = msg.split(":")[1]
             try:
                 # Tell the simulator about the new UUV target or command
-                requests.post("https://127.0.0.1:443/sim_ingress", json={"UUV_STATE": cmd_payload}, verify=False)
+                sim_in_logic({"UUV_STATE": cmd_payload})
             except: pass
             return jsonify({"watch_summary": "CMD SENT", "status": "queued"}), 200
 
@@ -5912,8 +5924,8 @@ THREAT: [NONE/LOW/MEDIUM/HIGH — tactical threat assessment reason, max 100 cha
                             except: pass
                             
                     if not use_cache:
-                        r = requests.post("https://127.0.0.1:443/intel_feed", json={"lat": la, "lon": lo}, verify=False)
-                        alerts = r.json().get("alerts", []) if r.status_code == 200 else []
+                        res, status_code = calculate_intel_feed({"lat": la, "lon": lo})
+                        alerts = res.get("alerts", []) if status_code == 200 else []
                         try:
                             with open(cache_file, "w") as f: json.dump({"alerts": alerts}, f)
                         except: pass
@@ -6052,7 +6064,7 @@ THREAT: [NONE/LOW/MEDIUM/HIGH — tactical threat assessment reason, max 100 cha
             task_results[task_id] = [txt]
             
             try:
-                requests.post("https://127.0.0.1:443/set_destination", json={"destination": f"{c_lat},{c_lon}", "lat": la, "lon": lo}, verify=False)
+                calculate_destination(f"{c_lat},{c_lon}", la, lo)
             except Exception as e: log(f"MOB Route Err: {e}")
             
             try:

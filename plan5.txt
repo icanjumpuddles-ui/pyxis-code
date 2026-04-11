@@ -1,0 +1,7 @@
+There's one more localhost call which triggers `/adsb_radar_map`. However, `adsb_radar_map` returns an image. And this is a pre-warming script. It's not one of the endpoints requested (`/gemini`, `/set_destination`, `/find_ports`, `/find_anchorage`, `/sim_ingress`). We'll leave it as is or we can extract the logic for `adsb_radar_map` as well. Wait, the prompt specifically says:
+"Extract the core logic from the /set_destination, /find_ports, and /find_anchorage routes into standalone Python functions (e.g., def calculate_destination(dest, lat, lon):).
+Update the original Flask routes to call these new functions and return the result.
+Update the /gemini route to call these functions directly instead of making requests.post calls to localhost."
+I have done exactly this, and I also found `sim_ingress` and `intel_feed` being called via localhost inside `/gemini`, so I extracted them too.
+
+Let's test compilation and run unit tests.

@@ -1,0 +1,107 @@
+We need to remove all instances of `requests.post("https://127.0.0.1:443/...` from `proxy_v4.1.0_RADAR.py` and replace them with direct function calls.
+
+1. Extract core logic for `find_ports` into a standalone function.
+   ```python
+   def calculate_ports(la, lo):
+       client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+       p = f"Position {la}, {lo}. List up to 5 major marinas/ports within 200nm. Return ONLY JSON: {{\"destinations\": [\"Name\", ...]}}"
+       try:
+           resp = client.models.generate_content(model="gemini-2.5-flash", config=types.GenerateContentConfig(tools=[types.Tool(google_search=types.GoogleSearch())]), contents=p)
+           return json.loads(re.search(r'\{.*\}', resp.text, re.DOTALL).group())
+       except: return {"destinations": ["Scan Failed"]}
+   ```
+2. Update `/find_ports` route:
+   ```python
+   @app.route('/find_ports', methods=['POST'])
+   def find_ports():
+       """
+       Pyxis Lite route. Commands Gemini to use its internal Google Search tools
+       to rapidly identify and return the names of 5 major marinas/ports within
+       repair/refuel range of the current host coordinates.
+       """
+       d = request.json or {}
+       la, lo = d.get('lat', 25.1527), d.get('lon', 55.3896)
+       return jsonify(calculate_ports(la, lo))
+   ```
+3. Do the same for `find_anchorage`:
+   ```python
+   def calculate_anchorage(la, lo):
+       client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+       p = f"Find 5 nearest safe anchorages to {la}, {lo} for 2.9m draft. Protected from wind. Return ONLY JSON: {{\"destinations\": [\"Name\", ...]}}"
+       try:
+           resp = client.models.generate_content(model="gemini-2.5-flash", config=types.GenerateContentConfig(tools=[types.Tool(google_search=types.GoogleSearch())]), contents=p)
+           return json.loads(re.search(r'\{.*\}', resp.text, re.DOTALL).group())
+       except: return {"destinations": ["Scan Failed"]}
+   ```
+   ```python
+   @app.route('/find_anchorage', methods=['POST'])
+   def find_anchorage():
+       """
+       Pyxis Lite route. Commands Gemini to evaluate local bathymetry and fetch
+       the names of 5 well-protected safe anchorages near the physical vessel.
+       """
+       d = request.json or {}
+       la, lo = d.get('lat', 25.1527), d.get('lon', 55.3896)
+       return jsonify(calculate_anchorage(la, lo))
+   ```
+4. Do the same for `set_destination`:
+   ```python
+   def calculate_destination(dest, la, lo):
+       client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+       p = f"Plot course from {la}, {lo} to {dest}. Use up to 30 waypoints. Avoid land. Consider safe depth contours and maritime hazards. Maintain a safe depth of at least 3m at all times. Return ONLY valid raw JSON: {{\"waypoints\": [[lat, lon], ...]}}"
+       try:
+           resp = client.models.generate_content(model="gemini-2.5-flash", config=types.GenerateContentConfig(response_mime_type="application/json"), contents=p)
+           route_data = json.loads(resp.text.strip().replace("```json", "").replace("```", ""))
+           with open(ROUTE_FILE, "w") as f: json.dump(route_data, f)
+
+           # NMEA 0183 Generator for B&G Vulcan integration
+           wpts = route_data.get("waypoints", [])
+           if wpts:
+               try:
+                   sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                   sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+
+                   rte_waypoints = []
+                   for i, wpt in enumerate(wpts):
+                       lat_nmea = dec_to_nmea(wpt[0], True)
+                       lon_nmea = dec_to_nmea(wpt[1], False)
+                       wpt_name = f"WP{i+1:03d}"
+                       rte_waypoints.append(wpt_name)
+
+                       wpl_body = f"GPWPL,{lat_nmea},{lon_nmea},{wpt_name}"
+                       wpl_sent = f"${wpl_body}*{nmea_checksum(wpl_body)}\r\n"
+                       sock.sendto(wpl_sent.encode('utf-8'), ('255.255.255.255', 10110))
+
+                   for chunk_idx in range(0, len(rte_waypoints), 8):
+                       chunk = rte_waypoints[chunk_idx:chunk_idx+8]
+                       total_msg = (len(rte_waypoints) + 7) // 8
+                       msg_num = (chunk_idx // 8) + 1
+                       rte_body = f"GPRTE,{total_msg},{msg_num},c,PYXIS_RTE," + ",".join(chunk)
+                       rte_sent = f"${rte_body}*{nmea_checksum(rte_body)}\r\n"
+                       sock.sendto(rte_sent.encode('utf-8'), ('255.255.255.255', 10110))
+               except Exception as e:
+                   log(f"NMEA Broadcast Err: {e}")
+
+           task_queue.put(("routing", la, lo, "Course plotted to " + dest + " and transmitted to NMEA MFD."))
+           return {"status": "plotted"}
+       except Exception as e:
+           return {"error": "Err"}
+   ```
+   ```python
+   @app.route('/set_destination', methods=['POST'])
+   def set_dest():
+       """
+       Endpoint that accepts a raw string destination name and requests Gemini to
+       plot a viable 30-waypoint route utilizing pathfinding logic to avoid land
+       and shallow waters. Saves the final trace to 'active_route.json'.
+       """
+       d = request.json or {}
+       dest, la, lo = d.get("destination"), d.get("lat"), d.get("lon")
+       res = calculate_destination(dest, la, lo)
+       if "error" in res:
+           return "Err", 500
+       return jsonify(res)
+   ```
+5. Update `gemini` route in lines 4877, 4883, 4887 to use the helper functions instead of `requests.post`.
+6. `sim_ingress` in line 5872 can be replaced with `sim_in_logic({"UUV_STATE": cmd_payload})` where `sim_in_logic` takes `payload`. I'll rename the body of `sim_in` to `sim_in_logic(payload)` and call it.
+7. `intel_feed` in line 5896 can be replaced with `calculate_intel_feed(la, lo)`. Wait, `intel_feed` uses global request. Let's see how `intel_feed` looks.

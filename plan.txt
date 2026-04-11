@@ -1,0 +1,29 @@
+1. Use `write_file` to create `state_manager.py` with the `PyxisState` class implementation.
+   - Implement `PyxisState` class with `threading.Lock()`.
+   - Maintain in-memory states for `telemetry` (SIM), `dt_state` (DT), `radar_contacts`, and `audio_history`.
+   - Provide `get_state()` and `update_state()` methods.
+   - Start a background thread (`_flush_loop`) within `__init__` that writes the states to `sim_telemetry.json` and `latest_sector.json` every 5 seconds.
+
+2. Use `read_file` to verify the creation and contents of `state_manager.py`.
+
+3. Use `replace_with_git_merge_diff` to update `proxy_v4.1.0_RADAR.py` Imports.
+   - Import `PyxisState` from `state_manager`.
+   - Instantiate `pyxis_state = PyxisState(SIM, DT)` immediately after `SIM` and `DT` file paths are defined.
+
+4. Use `replace_with_git_merge_diff` to update `/status_api` (`st_api`) in `proxy_v4.1.0_RADAR.py`.
+   - Replace the blocks loading `DT` and `SIM` from JSON.
+   - Use `pyxis_state.get_state("DT")` and `pyxis_state.get_state("SIM")`.
+
+5. Use `replace_with_git_merge_diff` to update `/telemetry` (`handle_telem`) in `proxy_v4.1.0_RADAR.py`.
+   - **GET**: Replace `DT` and `SIM` JSON reads with `pyxis_state.get_state()`.
+   - **POST**: Replace the `SIM` JSON read/write block with `pyxis_state.update_state("SIM", payload)` followed by `pyxis_state.get_state("SIM")` to safely fetch the updated combined coordinates for `last_pos.json`.
+
+6. Use `replace_with_git_merge_diff` to update `/sim_ingress` (`sim_in`) in `proxy_v4.1.0_RADAR.py`.
+   - Replace the `DT` read for `onboard_mode` with `pyxis_state.get_state("DT").get("onboard_mode", False)`.
+   - Replace the `SIM` JSON write at the end of the function with `pyxis_state.update_state("SIM", payload, replace=True)`.
+
+7. Use `run_in_bash_session` to execute `python3 -m unittest discover tests` to run the full test suite.
+
+8. Complete pre-commit steps to ensure proper testing, verification, review, and reflection are done.
+
+9. Use the submit tool to submit the changes.
