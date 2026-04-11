@@ -2916,6 +2916,12 @@ def st_api():
     """
     try:
         global last_known_lat, last_known_lon
+        d = {}
+        if os.path.exists(DT):
+            try:
+                with open(DT,"r") as f: d=json.load(f)
+            except: pass
+
         d = pyxis_state.get_state("DT")
             
         # UI OVERRIDE: Lock GPS to Captain's Watch
@@ -2928,9 +2934,33 @@ def st_api():
         s = pyxis_state.get_state("SIM")
         s.pop("audio_history", None)
             
+            real_radar = d.get("radar_contacts", [])
+            sim_radar = s.get("radar_contacts", [])
+
+            import time
+            if s and (time.time() - s.get("last_sim_update", 0) <= 15.0):
+                d.update(s)
+                # Map Headless Sim Boat Coords to Global Pyxis Coords
+                if not d.get("onboard_mode", False) and d.get("BOAT_LAT", 0.0) != 0.0:
+                    d["lat"] = d["BOAT_LAT"]
+                    d["lon"] = d["BOAT_LON"]
+                    last_known_lat = d["lat"]
+                    last_known_lon = d["lon"]
+
+                if real_radar and sim_radar:
+                    d["radar_contacts"] = real_radar + sim_radar
+                elif real_radar:
+                    d["radar_contacts"] = real_radar
+                elif sim_radar:
+                    d["radar_contacts"] = sim_radar
+            else:
+                # Simulator offline -> MOOR PYXIS AUTONOMOUSLY (DECOUPLED FROM WATCH)
+                d["lat"] = last_known_lat
+                d["lon"] = last_known_lon
+                d["radar_contacts"] = real_radar  # STRIP GHOST SIMULATOR RADAR CONTACTS
         real_radar = d.get("radar_contacts", [])
         sim_radar = s.get("radar_contacts", [])
-
+            
         import time
         if s and (time.time() - s.get("last_sim_update", 0) <= 15.0):
             d.update(s)
@@ -3057,6 +3087,58 @@ def player_lite():
     global last_known_lat, last_known_lon
     return render_template('player_lite.html', lat=last_known_lat, lon=last_known_lon)
 
+_="""    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        body { background: #000; color: #0f0; font-family: monospace; margin: 0; padding: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+        #map { width: 100vw; flex: 1; }
+        .overlay-text { position: absolute; bottom: 35vh; right: 10px; z-index: 1000; background: rgba(0,20,0,0.8); padding: 10px; border: 1px solid #0f0; border-radius: 5px; font-size: 12px; pointer-events: none; }
+        .ui { flex: 0 0 30vh; background: #010; overflow-y: auto; padding: 10px; border-top: 2px solid #0f0; display: flex; flex-direction: column; }
+        .play-row { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px dashed #0a0; padding: 8px 0; }
+        .play-btn { background: rgba(0,255,0,0.1); color: #0f0; border: 1px solid #0f0; padding: 6px 12px; font-size: 12px; cursor: pointer; border-radius: 4px; }
+        .play-btn:active { background: #0f0; color: #000; }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <div class="overlay-text">
+        <span style="color:#0f0;">ÃƒÂ¢Ã¢â‚¬â€œÃ‚Â² PYXIS DRONE</span><br>
+        <span style="color:#00f;">ÃƒÂ¢Ã¢â‚¬â€  CREW WATCH</span>
+    </div>
+    <div class="ui">
+        <div style="font-weight: bold; margin-bottom: 5px; color: #0a0;">--- SECURE AUDIO INBOX ---</div>
+        <div id="audioList" style="font-size: 13px;">Waiting for telemetry...</div>
+    </div>
+    <audio id="audio" controls style="display:none;"></audio>
+
+    <script>
+        let map, pyxisMarker, watchMarker;
+        let isInitialized = false;
+        let currentAu = null;
+
+        function playId(aid) {
+            if(currentAu) { currentAu.pause(); }
+            currentAu = new Audio('/audio?id=' + aid + '&bust=' + Date.now());
+            currentAu.play().catch(e => console.error("Play prevented", e));
+        }
+
+        function initMap() {
+            map = L.map('map', {zoomControl: false}).setView([0, 0], 2);
+            L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png').addTo(map);
+            
+            pyxisMarker = L.marker([0,0], {
+                icon: L.divIcon({
+                    className: 'vessel-icon',
+                    html: '<div style="font-size: 24px; color: #0f0;">&#x25B2;</div>',
+                    iconSize: [24, 24],
+                    iconAnchor: [12, 12]
+                })
+            }).addTo(map);
+            
+            watchMarker = L.circleMarker([0,0], {color: '#00f', radius: 8, fillOpacity: 0.9}).addTo(map);
+        }
+        initMap();
+
 
 
 @app.route('/verbose')
@@ -3068,6 +3150,442 @@ def player():
     """
     global last_known_lat, last_known_lon
     return render_template('player.html', lat=last_known_lat, lon=last_known_lon)
+
+_="""
+<!DOCTYPE html>
+<html>
+<head>
+    <title>PYXIS TACTICAL</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        body { background: #000; color: #0f0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+        #map { flex: 1; border-bottom: 1px solid #0f0; min-height: 55vh; }
+        .ui { flex: 0 0 auto; background: rgba(5, 10, 5, 0.85); backdrop-filter: blur(10px); padding: 8px; display: flex; flex-direction: column; gap: 8px; overflow-y: auto; max-height: 45vh; border-top: 1px solid #1a1; }
+        .row { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; align-items: stretch; }
+        .stat { border: 1px solid #0f0; padding: 6px; width: 100%; text-align: center; box-sizing: border-box; background: rgba(0, 40, 0, 0.2); border-radius: 4px; font-size: 12px;}
+        .contact-box { border: 1px solid #0f0; background: #000; padding: 0; max-height: 120px; overflow-y: auto; font-size: 11px; border-radius: 4px; }
+        .contact-title { text-align: center; color: #0f0; border-bottom: 1px solid #0f0; padding: 4px; font-weight: bold; background: #010; sticky: top; top: 0; font-size: 12px;}
+        .contact-item { display: flex; justify-content: space-between; padding: 6px; border-bottom: 1px solid #131; }
+        .contact-item:last-child { border-bottom: none; }
+        .c-drone { color: #ff0; background: rgba(255, 255, 0, 0.05); } .c-alarm { color: #f20; background: rgba(255, 30, 0, 0.05); } .c-vessel { color: #0f0; }
+        button { background: rgba(0, 255, 0, 0.15); color: #0f0; border: 1px solid #0f0; padding: 8px 12px; font-weight: bold; cursor: pointer; flex: 1 1 120px; font-size: 11px; border-radius: 4px; text-transform: uppercase; transition: transform 0.1s, background 0.2s; }
+        button:active { transform: scale(0.98); }
+        button:hover { background: rgba(0, 255, 0, 0.3); }
+        input[type="text"] { background: #000; color: #0f0; border: 1px solid #0f0; padding: 8px; font-family: monospace; flex: 1 1 150px; border-radius: 4px; font-size: 12px;}
+        audio { filter: invert(100%) hue-rotate(180deg); width: 100%; max-width: 400px; margin: 4px auto; display: block; height: 30px; }
+        #chatLog { max-height: 150px; overflow-y: auto; border: 1px solid #0f0; padding: 5px; margin-top: 5px; font-size: 11px; background: #000; border-radius: 4px; }
+        #chatLog div { margin-bottom: 3px; }
+        @media (max-width: 600px) {
+            .row { flex-direction: column; }
+            button, input[type="text"] { width: 100%; flex: none; }
+            .ui { padding: 6px; gap: 6px; }
+            #map { min-height: 50vh; }
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <!-- Drag-to-reposition toast -->
+    <div id="drag-toast" style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(0,40,0,0.92);border:1px solid #0f0;color:#0f0;padding:10px 18px;border-radius:6px;font-family:monospace;font-size:13px;z-index:9999;pointer-events:none;opacity:0;transition:opacity 0.5s;"></div>
+    <div class="ui">
+        <div class="row">
+            <div class="stat">
+                <div><span style="color:#888;">POS: </span><span id="loc">WAITING...</span></div>
+                <div><span style="color:#888;">WAVE: </span><span id="wea">WAITING...</span></div>
+                <div><span style="color:#888;">SONAR: </span><span id="sub">WAITING...</span></div>
+            </div>
+        </div>
+        <div class="contact-box" id="contactList">
+            <div class="contact-title">SITUATION OVERVIEW</div>
+            <div id="contactsContent" style="padding: 5px;">Searching...</div>
+        </div>
+        <!-- AIS VESSEL DATABASE DROPDOWN -->
+        <div class="contact-box" style="margin-top:6px;">
+            <div class="contact-title">AIS VESSEL DATABASE</div>
+            <div style="padding:5px; display:flex; gap:5px; align-items:center;">
+                <select id="aisSelect" onchange="aisSelected()" style="flex:1; background:#000; color:#0f0; border:1px solid #0f0; padding:4px; font-family:monospace; font-size:11px;">
+                    <option value="">-- SELECT VESSEL --</option>
+                </select>
+                <button onclick="trackAisVessel()" style="flex:0 0 60px; padding:4px 6px; font-size:10px;">TRACK</button>
+            </div>
+            <div id="aisDetail" style="padding:5px; font-size:11px; color:#8f8; display:none;"></div>
+        </div>
+        <!-- SEA STATE MAP -->
+        <div class="contact-box" style="margin-top:6px;">
+            <div class="contact-title" style="display:flex; justify-content:space-between; align-items:center;">
+                <span>SEA STATE MAP</span>
+                <span style="font-size:10px; color:#888;">zoom: <button onclick="changeWaveZoom(-1)" style="padding:1px 5px; font-size:10px;">-</button><span id="waveZoomLbl">2</span><button onclick="changeWaveZoom(1)" style="padding:1px 5px; font-size:10px;">+</button></span>
+            </div>
+            <div style="text-align:center; padding:4px;">
+                <img id="waveMapImg" src="/wave_map?w=320&h=200&z=2" style="width:100%; max-width:320px; border:1px solid #0a0; border-radius:3px;" />
+            </div>
+        </div>
+        <!-- AIS GEO MAP -->
+        <div class="contact-box" style="margin-top:6px;">
+            <div class="contact-title" style="display:flex; justify-content:space-between; align-items:center;">
+                <span>AIS TRAFFIC MAP</span>
+                <span style="font-size:10px; color:#888;">zoom: <button onclick="changeAisZoom(-1)" style="padding:1px 5px; font-size:10px;">-</button><span id="aisZoomLbl">3</span><button onclick="changeAisZoom(1)" style="padding:1px 5px; font-size:10px;">+</button></span>
+            </div>
+            <div style="text-align:center; padding:4px;">
+                <img id="aisMapImg" src="/ais_map?w=320&h=200&z=3" style="width:100%; max-width:320px; border:1px solid #0a0; border-radius:3px;" />
+            </div>
+        </div>
+        <div class="row">
+            <button onclick="isArmed=true;this.style.background='#333';document.getElementById('audio').play().catch(e=>{});">ARM AUTO-PLAY (UNLOCK AUDIO)</button>
+            <button onclick="reqRoute('ANCHORAGE')">FIND ANCHORAGE</button>
+            <button onclick="reqRoute('PORT')">FIND PORTS</button>
+        </div>
+        <div class="row">
+            <button onclick="reqGemini('DAY_BRIEF')">MORNING BRIEF</button>
+            <button onclick="reqGemini('NIGHT_BRIEF')">EVENING BRIEF</button>
+        </div>
+        <div class="row">
+            <input type="text" id="destInput" placeholder="Enter destination..." />
+            <button onclick="setDest()">SET COURSE</button>
+            <button onclick="clearRoute()" style="flex: 0.5; background: #500; color: #fff;">CLEAR MAP</button>
+            <button id="btnTrack" onclick="toggleTrack()" style="flex: 0.5; background: #050; color: #0f0; border: 1px solid #0f0;">TRACK: ON</button>
+        </div>
+        <div class="row">
+            <button id="micBtn" style="flex: 1;" onmousedown="startRecording()" onmouseup="stopRecording()">Ã°Å¸Å½Â¤ HOLD TO SPEAK</button>
+        </div>
+        <div id="chatLog"></div>
+        <div class="row">
+            <audio id="audio" controls></audio>
+        </div>
+    </div>
+    <script>
+        let waveZoom = 2, aisZoom = 3;
+        let trackedMmsi = null;
+        let map, vesselMarker, trackPolyline, radarCircles = [], routePolyline;
+        let lastLat = 0, lastLon = 0;
+        let curStatId = 0, curSysId = 0;
+        let isArmed = false;
+        let showTrack = true;
+
+        function changeWaveZoom(delta) {
+            waveZoom = Math.max(1, Math.min(8, waveZoom + delta));
+            document.getElementById('waveZoomLbl').innerText = waveZoom;
+            refreshMaps();
+        }
+        function changeAisZoom(delta) {
+            aisZoom = Math.max(1, Math.min(8, aisZoom + delta));
+            document.getElementById('aisZoomLbl').innerText = aisZoom;
+            refreshMaps();
+        }
+        function refreshMaps() {
+            const bust = Date.now();
+            document.getElementById('waveMapImg').src = `/wave_map?w=320&h=200&z=${waveZoom}&lat=${lastLat}&lon=${lastLon}&bust=${bust}`;
+            document.getElementById('aisMapImg').src = `/ais_map?w=320&h=200&z=${aisZoom}&lat=${lastLat}&lon=${lastLon}&bust=${bust}`;
+        }
+
+        // AIS Vessel Dropdown
+        let aisVesselDb = {};
+        function populateAisDropdown(contacts) {
+            aisVesselDb = {};
+            const sel = document.getElementById('aisSelect');
+            const prev = sel.value;
+            sel.innerHTML = '<option value="">-- SELECT VESSEL --</option>';
+            contacts.filter(c => c.mmsi || c.name).forEach(c => {
+                const key = c.mmsi || c.id || c.name;
+                aisVesselDb[key] = c;
+                const opt = document.createElement('option');
+                opt.value = key;
+                const rng = c.range_nm ? ` | ${c.range_nm.toFixed(1)}nm` : '';
+                opt.text = `${c.name || 'Unknown'}${rng}`;
+                sel.appendChild(opt);
+            });
+            if (prev && aisVesselDb[prev]) sel.value = prev;
+        }
+        function aisSelected() {
+            const key = document.getElementById('aisSelect').value;
+            const box = document.getElementById('aisDetail');
+            if (!key || !aisVesselDb[key]) { box.style.display='none'; return; }
+            const c = aisVesselDb[key];
+            box.style.display = 'block';
+            box.innerHTML = [
+                `<b style="color:#0f0;">${c.name || 'Unknown'}</b>`,
+                c.mmsi      ? `<div>MMSI: <span style="color:#fff">${c.mmsi}</span></div>` : '',
+                c.callsign  ? `<div>Callsign: <span style="color:#fff">${c.callsign}</span></div>` : '',
+                c.imo       ? `<div>IMO: <span style="color:#fff">${c.imo}</span></div>` : '',
+                c.destination ? `<div>Destination: <span style="color:#0cf">${c.destination}</span></div>` : '',
+                c.speed !== undefined ? `<div>Speed: <span style="color:#fff">${c.speed?.toFixed?.(1) ?? c.speed} kn</span></div>` : '',
+                c.heading !== undefined ? `<div>Heading: <span style="color:#fff">${c.heading?.toFixed?.(0) ?? c.heading}Ã‚Â°</span></div>` : '',
+                c.range_nm  ? `<div>Range: <span style="color:#fff">${c.range_nm.toFixed(2)} nm</span></div>` : '',
+                c.bearing   ? `<div>Bearing: <span style="color:#fff">${c.bearing.toFixed(0)}Ã‚Â°</span></div>` : '',
+                c.lat       ? `<div>Pos: <span style="color:#aaa">${c.lat.toFixed(4)}, ${c.lon.toFixed(4)}</span></div>` : ''
+            ].join('');
+        }
+        function trackAisVessel() {
+            const key = document.getElementById('aisSelect').value;
+            if (!key || !aisVesselDb[key]) return;
+            const c = aisVesselDb[key];
+            if (c.lat && c.lon) {
+                trackedMmsi = key;
+                map.panTo([c.lat, c.lon]);
+                map.setZoom(12);
+            }
+        }
+
+        // Voice Recording
+        let mediaRecorder;
+        let audioChunk = [];
+        let isRecording = false;
+
+        async function startRecording() {
+            if (isRecording) return;
+            isRecording = true;
+            document.getElementById('micBtn').innerText = 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â´ RECORDING...';
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+                mediaRecorder.ondataavailable = e => {
+                    audioChunk.push(e.data);
+                };
+                mediaRecorder.onstop = () => {
+                    sendVoice();
+                    audioChunk = [];
+                    isRecording = false;
+                };
+                mediaRecorder.start();
+            } catch (e) {
+                console.error("Could not start recording:", e);
+                document.getElementById('micBtn').innerText = 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â½ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¤ HOLD TO SPEAK (Error)';
+                isRecording = false;
+            }
+        }
+
+        function stopRecording() {
+            if (mediaRecorder && mediaRecorder.state === 'recording') {
+                mediaRecorder.stop();
+                mediaRecorder.stream.getTracks().forEach(track => track.stop());
+            }
+        }
+        
+        async function sendVoice() {
+            const blob = new Blob(audioChunk, {type: 'audio/webm'});
+            const fd = new FormData();
+            fd.append('audio', blob, 'voice.webm');
+            fd.append('lat', lastLat); fd.append('lon', lastLon);
+            try { 
+                const res = await fetch('/voice_input', {method: 'POST', body: fd}); 
+                const j = await res.json();
+                
+                const clog = document.getElementById('chatLog');
+                if(j.user_query) {
+                    const d = document.createElement('div');
+                    d.style.color = '#ff0';
+                    d.innerText = `ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â½ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¤ ${j.user_query}`;
+                    clog.prepend(d);
+                }
+                if(j.response) {
+                    const r = document.createElement('div');
+                    r.style.color = '#0f0';
+                    r.innerText = `< ${j.response}`;
+                    clog.prepend(r);
+                }
+            } catch(e) { console.log("Voice err", e); }
+            document.getElementById('micBtn').innerText = 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â½ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¤ HOLD TO SPEAK';
+        }
+        
+        async function sendChat() {
+            // Placeholder for future chat input
+        }
+
+        function initMap() {
+            map = L.map('map', {
+                center: [0, 0],
+                zoom: 2,
+                zoomControl: false,
+                attributionControl: false,
+                scrollWheelZoom: true,
+                doubleClickZoom: false,
+                boxZoom: false,
+                keyboard: false,
+                dragging: true,
+                minZoom: 2,
+                maxZoom: 18
+            });
+
+            L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+                maxZoom: 20,
+                attribution: '&copy; <a href="https://stadiamaps.com/" target="_blank">Stadia Maps</a> &copy; <a href="https://openmaptiles.org/" target="_blank">OpenMapTiles</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+            }).addTo(map);
+
+            vesselMarker = L.marker([0, 0], {
+                draggable: true,
+                icon: L.divIcon({
+                    className: 'vessel-icon',
+                    html: '<div style="font-size: 24px; color: #0f0; cursor: grab; user-select:none; touch-action:none;" title="Drag to reposition Pyxis">&#x25B2;</div>',
+                    iconSize: [24, 24],
+                    iconAnchor: [12, 12]
+                })
+            }).addTo(map);
+
+            // Drag handlers — suppress map pan while dragging (desktop + touch)
+            let _dragging = false;
+            vesselMarker.on('dragstart', function() {
+                _dragging = true;
+                map.dragging.disable();
+                map.scrollWheelZoom.disable();
+            });
+            vesselMarker.on('dragend', function(e) {
+                _dragging = false;
+                map.dragging.enable();
+                map.scrollWheelZoom.enable();
+                const latlng = e.target.getLatLng();
+                fetch('/set_pyxis_position', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({lat: latlng.lat, lon: latlng.lng})
+                }).then(r => r.json()).then(j => {
+                    const toast = document.getElementById('drag-toast');
+                    if (toast) {
+                        toast.textContent = '[LOC] PYXIS POSITION SET: ' + latlng.lat.toFixed(4) + ', ' + latlng.lng.toFixed(4);
+                        toast.style.opacity = '1';
+                        setTimeout(() => { toast.style.opacity = '0'; }, 3000);
+                    }
+                }).catch(err => console.warn('Position override failed:', err));
+            });  // end dragend
+            // Touch-friendly: leaflet handles touch drag natively when draggable:true
+
+            trackPolyline = L.polyline([], { color: '#00ff00', weight: 2, opacity: 0.7 }).addTo(map);
+            routePolyline = L.polyline([], { color: '#00ffff', weight: 3, opacity: 0.8, dashArray: '5, 5' }).addTo(map);
+        }
+
+        initMap();
+
+        function updateRadar(contacts, currentLat, currentLon) {
+            radarCircles.forEach(c => map.removeLayer(c));
+            radarCircles = [];
+            let contactsHtml = '';
+
+            contacts.sort((a, b) => a.range_nm - b.range_nm);
+
+            contacts.forEach(c => {
+                let color = '#ff0'; // Default for drones
+                let className = 'c-drone';
+                if (c.type === 'MERCHANT') {
+                    color = '#0f0';
+                    className = 'c-vessel';
+                } else if (c.type === 'UNKNOWN' || c.type === 'SUBMERGED') {
+                    color = '#f20';
+                    className = 'c-alarm';
+                }
+
+                const circle = L.circle([c.lat, c.lon], {
+                    color: color,
+                    fillColor: color,
+                    fillOpacity: 0.2,
+                    radius: 50 // Fixed radius for visibility, not actual size
+                }).addTo(map);
+                radarCircles.push(circle);
+
+                contactsHtml += `<div class="contact-item ${className}"><span>${c.name || c.id}</span><span>${c.bearing.toFixed(0)}ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â° / ${c.range_nm.toFixed(1)}nm</span></div>`;
+            });
+            document.getElementById('contactsContent').innerHTML = contactsHtml || '<div style="padding: 5px;">No contacts detected.</div>';
+        }
+
+        function toggleTrack() {
+            showTrack = !showTrack;
+            document.getElementById('btnTrack').innerText = showTrack ? 'TRACK: ON' : 'TRACK: OFF';
+            if (!showTrack) {
+                trackPolyline.setLatLngs([]);
+            }
+        }
+
+        async function reqGemini(cmd) {
+            try {
+                await fetch('/gemini', {
+                    method: 'POST', 
+                    headers: {'Content-Type': 'application/json', 'X-Garmin-Auth': 'PYXIS_ACTUAL_77X'},
+                    body: JSON.stringify({prompt: cmd, lat: lastLat, lon: lastLon})
+                });
+            } catch(e) {}
+        }
+
+        async function reqRoute(type) {
+            const res = await fetch(`/${type.toLowerCase()}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ lat: lastLat, lon: lastLon })
+            });
+            const j = await res.json();
+            if (j.destinations && j.destinations.length > 0) {
+                const dest = prompt(`Select a destination for ${type}:\n` + j.destinations.map((d, i) => `${i + 1}. ${d}`).join('\n'));
+                if (dest) {
+                    const idx = parseInt(dest) - 1;
+                    if (!isNaN(idx) && j.destinations[idx]) {
+                        document.getElementById('destInput').value = j.destinations[idx];
+                    }
+                }
+            } else {
+                alert(`No ${type}s found.`);
+            }
+        }
+
+        async function setDest() {
+            const dest = document.getElementById('destInput').value;
+            if (dest) {
+                await fetch('/set_destination', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ destination: dest, lat: lastLat, lon: lastLon })
+                });
+                alert('Course set!');
+            }
+        }
+
+        async function clearRoute() {
+            await fetch('/clear_route', { method: 'POST' });
+            routePolyline.setLatLngs([]);
+            alert('Route cleared!');
+        }
+
+        async function up() {
+            try {
+                const r = await fetch('/status_api?bust=' + Date.now());
+                const d = await r.json();
+
+                lastLat = d.lat || 0;
+                lastLon = d.lon || 0;
+
+                document.getElementById('loc').innerText = `${lastLat.toFixed(4)}, ${lastLon.toFixed(4)}`;
+
+                // Sea state from injected meteo data
+                if (d.wave_height_m !== undefined) {
+                    let waveStr = `Wave ${d.wave_height_m}m`;
+                    if (d.swell_height_m) waveStr += ` | Swell ${d.swell_height_m}m`;
+                    if (d.current_kn) waveStr += ` | Curr ${d.current_kn}kn`;
+                    document.getElementById('wea').innerText = waveStr;
+                } else {
+                    document.getElementById('wea').innerText = d.sea_state || 'UNKNOWN';
+                }
+                document.getElementById('sub').innerText = d.depth_m ? `${parseFloat(d.depth_m).toFixed(1)}m` : (d.depth ? `${d.depth.toFixed(1)}m` : 'SURFACE');
+
+                vesselMarker.setLatLng([d.lat, d.lon]);
+                if (d.cog) {
+                    vesselMarker.setRotationAngle(d.cog);
+                }
+
+                updateRadar(d.radar_contacts || [], d.lat, d.lon);
+                populateAisDropdown((d.radar_contacts || []).filter(c => c.type === 'MERCHANT' || c.mmsi));
+
+                // Refresh map images every 60s or when position changes
+                if (!lastLat || Math.abs(lastLat - d.lat) > 0.01) refreshMaps();
+
+                if (d.active_route && d.active_route.length > 0) {
+                    routePolyline.setLatLngs(d.active_route);
+                } else {
+                    routePolyline.setLatLngs([]);
+                }
+
+                let newStat = d.status_id || 0;
+                let newSys = d.systems_id || 0;
+
+                map.panTo([d.lat, d.lon]);
+                if(curStatId == 0) map.setZoom(13);
 
 
 
