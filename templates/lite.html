@@ -1,0 +1,89 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>PYXIS C2 - LITE</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <style>
+        body { background: #000; color: #0f0; font-family: monospace; padding: 20px; font-size: 16px; margin: 0; }
+        .row { display: flex; flex-direction: column; gap: 15px; margin-bottom: 20px; }
+        .stat { border: 1px solid #0f0; padding: 15px; background: rgba(0, 40, 0, 0.2); }
+        .val { font-size: 1.2em; font-weight: bold; color: #fff; margin-top: 5px; }
+        .contacts { font-size: 12px; margin-top: 10px; color: #8f8; }
+        button { background: #0f0; color: #000; border: none; padding: 20px; font-weight: bold; font-size: 16px; width: 100%; transition: 0.1s; border-radius: 4px; }
+        button:active { background: #fff; transform: scale(0.98); }
+        input { background: #000; color: #0f0; border: 1px solid #0f0; padding: 15px; width: 100%; box-sizing: border-box; font-family: monospace; font-size: 16px; margin-bottom: 15px; }
+        audio { display: none; }
+    </style>
+</head>
+<body>
+    <div style="text-align:center; margin-bottom: 20px;">
+        <h2 style="margin:0;">PYXIS LITE COMMAND</h2>
+        <div id="connection" style="color:#0f0;">CONNECTING...</div>
+    </div>
+
+    <div class="row">
+        <div class="stat">GPS FIX <div class="val" id="loc">AWAITING...</div></div>
+        <div class="stat">ENVIRONMENT <div class="val" id="wea">AWAITING...</div></div>
+        <div class="stat">SONAR CONTACTS <div class="contacts" id="rad">AWAITING...</div></div>
+    </div>
+
+    <input type="text" id="dest" placeholder="Enter override course..." />
+    <button onclick="setDest()">SUBMIT OVERRIDE</button>
+    <button style="margin-top: 15px; background:#f00; color:#fff;" onclick="sos()">TRANSMIT MAYDAY</button>
+    <button style="margin-top: 15px; background:#00f; color:#fff;" onclick="window.location.href='/lite_messages'">VIEW MESSAGES</button>
+
+    <audio id="audio" type="audio/mpeg"></audio>
+    <script>
+        let curStatId = 0, lastLat = 0, lastLon = 0, isArmed = false;
+
+        document.body.onclick = function() {
+            if(!isArmed) { isArmed = true; document.getElementById('audio').play().catch(e=>{}); }
+        };
+
+        async function setDest() {
+            let trg = document.getElementById('dest').value;
+            if(!trg) return;
+            try { await fetch('/set_destination', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({destination: trg, lat: lastLat, lon: lastLon})}); } catch(e){}
+            document.getElementById('dest').value = "ROUTING...";
+            setTimeout(() => document.getElementById('dest').value = "", 2000);
+        }
+
+        async function sos() {
+            try { await fetch('/gemini', {method: 'POST', headers: {'Content-Type': 'application/json', 'X-Garmin-Auth': 'PYXIS_ACTUAL_77X'}, body: JSON.stringify({prompt: 'MAYDAY'})}); } catch(e){}
+        }
+
+        async function up() {
+            try {
+                const r = await fetch('/status_api'), d = await r.json();
+                lastLat = d.lat; lastLon = d.lon;
+                document.getElementById('connection').innerText = "LINK ESTABLISHED";
+                document.getElementById('loc').innerText = d.lat.toFixed(5) + ', ' + d.lon.toFixed(5);
+                document.getElementById('wea').innerText = d.weather || "NOMINAL SWELL";
+
+                let rText = "";
+                if(d.radar_contacts && d.radar_contacts.length > 0) {
+                    d.radar_contacts.forEach(c => {
+                        rText += c.name + " [" + c.range_nm.toFixed(1) + "nm]<br>";
+                    });
+                } else { rText = "CLEAR SEA"; }
+                document.getElementById('rad').innerHTML = rText;
+
+                let newStat = d.status_id || 0;
+                let newSys = d.systems_id || 0;
+
+                if((newStat != curStatId && newStat != 0) || (newSys != curStatId && newSys != 0)) {
+                    curStatId = newStat > newSys ? newStat : newSys;
+                    if(isArmed) {
+                        let a = document.getElementById('audio');
+                        a.src = '/audio?t=' + Date.now();
+                        a.load();
+                        setTimeout(() => a.play(), 1000);
+                    }
+                }
+            } catch(e) { document.getElementById('connection').innerText = "LINK LOST"; document.getElementById('connection').style.color = "#f00"; }
+        }
+        setInterval(up, 3000);
+    </script>
+</body>
+</html>

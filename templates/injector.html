@@ -1,0 +1,180 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>PYXIS SCENARIO COMMAND</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        body { background: #000; color: #0f0; font-family: monospace; display: flex; flex-direction: column; height: 100vh; margin: 0; }
+        #map { flex: 0.55; border-bottom: 2px solid #0f0; }
+        .ui { flex: 0.45; padding: 15px; overflow-y: auto; background: #010; }
+        .row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+        button { background: #040; color: #0f0; border: 1px solid #0f0; padding: 12px; font-weight: bold; cursor: pointer; border-radius: 4px; }
+        button:active { background: #0f0; color: #000; }
+        input[type="range"] { flex: 1; margin: 0 15px; }
+        select { background: #000; color: #0f0; border: 1px solid #0f0; padding: 10px; font-family: monospace; width: 100%; transition: background 0.2s;}
+        select:focus { background: #030; outline: none; }
+        optgroup { background: #000; color: #888; font-style: normal; font-weight: bold; }
+        option { color: #0f0; padding: 5px; }
+        .info { color: #0a0; font-size: 13px; margin-bottom: 10px; display: block; }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <div class="ui">
+        <div class="row" style="color:#0f0; font-weight:bold; font-size: 18px; border-bottom: 1px dashed #0a0; padding-bottom: 10px;">GLOBAL SCENARIO COMMAND</div>
+
+        <span class="info">Select a real-world testing location to automatically warp the Pyxis Simulator. Navigational hazards (OpenSeaMap) will populate organically upon arrival.</span>
+
+        <div class="row">
+            <select id="geoPresets" onchange="warpToSelected()">
+                <option value="-37.84,144.91" disabled selected>SELECT A GLOBAL WARP ZONE...</option>
+                <optgroup label="Australian Waters">
+                    <option value="-37.84,144.91">Melbourne (Port Phillip Bay)</option>
+                    <option value="-38.277,144.731">Popes Eye (Port Phillip) [START]</option>
+                    <option value="-38.356,144.773">Blairgowrie Marina</option>
+                    <option value="-38.486,145.022">West Head (Westernport Bay)</option>
+                    <option value="-39.11,146.47">Wilsons Promontory</option>
+                    <option value="-33.85,151.26">Sydney Harbour (Heads)</option>
+                    <option value="-16.82,146.12">Great Barrier Reef (Cairns)</option>
+                    <option value="-32.06,115.74">Fremantle / Rottnest Island</option>
+                    <option value="-43.14,147.74">Hobart (Storm Bay)</option>
+                </optgroup>
+                <optgroup label="Global Strategic Chokepoints">
+                    <option value="26.56,56.25">Strait of Hormuz</option>
+                    <option value="12.58,43.33">Bab el-Mandeb (Red Sea)</option>
+                    <option value="29.93,32.56">Suez Canal (Gulf of Suez)</option>
+                    <option value="9.14,-79.91">Panama Canal (Caribbean Side)</option>
+                    <option value="1.25,103.83">Singapore Strait</option>
+                    <option value="5.83,95.31">Strait of Malacca</option>
+                    <option value="41.02,29.00">Bosphorus Strait</option>
+                    <option value="35.97,-5.49">Strait of Gibraltar</option>
+                </optgroup>
+                <optgroup label="Hostile & Active Zones">
+                    <option value="44.42,33.58">Black Sea (Crimea Coast)</option>
+                    <option value="15.22,41.97">Red Sea (Houthi Threat Area)</option>
+                    <option value="11.41,43.43">Gulf of Aden (Piracy Zone)</option>
+                    <option value="9.83,115.54">South China Sea (Spratly Islands)</option>
+                    <option value="25.03,121.95">Taiwan Strait</option>
+                    <option value="33.56,34.82">Eastern Mediterranean (Lebanon Coast)</option>
+                </optgroup>
+                <optgroup label="Extreme Climates">
+                    <option value="-56.98,-67.27">Cape Horn (Southern Ocean)</option>
+                    <option value="-60.00,-60.00">Drake Passage</option>
+                    <option value="78.22,15.62">Svalbard (Arctic Circle Sea Ice)</option>
+                    <option value="53.07,-169.54">Bering Sea (Dutch Harbor)</option>
+                    <option value="47.56,-52.12">Grand Banks (Iceberg Alley)</option>
+                </optgroup>
+                <optgroup label="European & American Seas">
+                    <option value="51.01,1.48">English Channel (Dover Strait)</option>
+                    <option value="54.12,6.50">North Sea (Heavy Traffic)</option>
+                    <option value="25.80,-79.80">Florida Straits</option>
+                    <option value="40.45,-73.80">New York Harbor Approaches</option>
+                    <option value="24.45,-89.80">Gulf of Mexico (Oil Rigs)</option>
+                </optgroup>
+            </select>
+        </div>
+
+        <div class="row" style="margin-top: 10px;">
+            <span>TARGET COORDS:</span>
+            <span id="coords" style="color: #fff; font-size: 16px;">-37.8400, 144.9100</span>
+        </div>
+
+        <div class="row">
+            <span>SEA STATE OVERRIDE:</span>
+            <span id="seaOut" style="color: #fff; font-size: 16px;">1.5m</span>
+        </div>
+        <div class="row" style="margin-bottom: 20px;">
+            <input type="range" id="seaState" min="0" max="6" step="0.5" value="1.5" oninput="document.getElementById('seaOut').innerText=this.value+'m'" />
+        </div>
+
+        <button style="width:100%; padding:20px; font-size:18px; margin-top:10px;" onclick="deploy()">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ EXECUTE WARP & INJECT ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬</button>
+        <button style="width:100%; padding:15px; font-size:16px; margin-top:10px; background:#005;" onclick="locateWithPyxis()">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂºÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â  LOCATE WITH PYXIS (SYNC WATCH)</button>
+    </div>
+
+    <script>
+        let map, marker, crewMarker;
+        let lat = -37.8400, lon = 144.9100;
+
+        function initMap() {
+            map = L.map('map', {zoomControl: false}).setView([lat, lon], 12);
+            L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+                maxZoom: 19
+            }).addTo(map);
+            marker = L.marker([lat, lon]).addTo(map);
+            crewMarker = L.circleMarker([0,0], {color: '#00f', radius: 6, fillOpacity: 0.8}).addTo(map);
+
+            map.on('click', function(e) {
+                lat = e.latlng.lat; lon = e.latlng.lng;
+                updateMapPos();
+                document.getElementById('geoPresets').selectedIndex = 0; // reset dropdown
+            });
+
+            // Fetch live proxy target on load to prevent visual reset
+            fetch('/status_api').then(r=>r.json()).then(d=>{
+                if(d.lat && d.lon) {
+                    lat = parseFloat(d.lat);
+                    lon = parseFloat(d.lon);
+                    marker.setLatLng([lat, lon]);
+                    map.panTo([lat, lon]);
+                    updateMapPos();
+                }
+                if (d.CREW_LAT !== undefined && d.CREW_LON !== undefined && d.CREW_LAT !== 0) {
+                    crewMarker.setLatLng([d.CREW_LAT, d.CREW_LON]);
+                }
+            }).catch(e=>{});
+        }
+        initMap();
+
+        function updateMapPos() {
+            marker.setLatLng([lat, lon]);
+            map.panTo([lat, lon]);
+            document.getElementById('coords').innerText = lat.toFixed(4) + ", " + lon.toFixed(4);
+        }
+
+        function warpToSelected() {
+            let val = document.getElementById('geoPresets').value;
+            if(val) {
+                let parts = val.split(',');
+                lat = parseFloat(parts[0]);
+                lon = parseFloat(parts[1]);
+                updateMapPos();
+                map.setZoom(10);
+            }
+        }
+
+        async function deploy() {
+            let sst = parseFloat(document.getElementById('seaState').value);
+            // No manual threats anymore, they are auto-generated from OSM
+            let payload = { lat: lat, lon: lon, sea_state: sst, threats: [] };
+            try {
+                const res = await fetch('/update_scenario', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                if(res.ok) {
+                    alert('WARP SUCCESSFUL! NAV HAZARDS WILL POPULATE SHORTLY.');
+                } else {
+                    alert('SERVER REJECTED PAYLOAD!');
+                }
+            } catch(e) { alert("Deployment Error"); }
+        }
+
+        function locateWithPyxis() {
+            fetch('/status_api').then(r=>r.json()).then(d=>{
+                if(d.CREW_LAT !== undefined && d.CREW_LON !== undefined && d.CREW_LAT !== 0) {
+                    lat = parseFloat(d.CREW_LAT);
+                    lon = parseFloat(d.CREW_LON);
+                    updateMapPos();
+                    deploy(); // Auto deploy to the new watch coords
+                } else {
+                    alert('NO PHYSICAL WATCH GPS DATA AVAILABLE YET');
+                }
+            }).catch(e=>{alert("Failed to fetch Watch coordinates.")});
+        }
+    </script>
+</body>
+</html>

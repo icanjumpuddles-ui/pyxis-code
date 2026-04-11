@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<title>PYXIS LIVE TRACKER</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&family=Roboto+Mono:wght@400;600&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  :root{--bg:#050d1a;--glass:rgba(8,20,45,0.75);--border:rgba(0,212,255,0.18);--cyan:#00d4ff;--green:#00ff9f;--amber:#ffb300;--red:#ff4757;--text:#c8e6ff;--dim:#4a7a9b;}
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;overflow:hidden;height:100vh;width:100vw;}
+  #map{position:absolute;inset:0;z-index:1;}
+  .hud{position:absolute;z-index:10;background:var(--glass);border:1px solid var(--border);border-radius:12px;padding:10px 14px;backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);box-shadow:0 4px 24px rgba(0,0,0,0.5);}
+  .hud-label{font-family:'Roboto Mono',monospace;font-size:9px;letter-spacing:2px;text-transform:uppercase;color:var(--dim);margin-bottom:2px;}
+  .hud-val{font-family:'Roboto Mono',monospace;font-size:13px;font-weight:600;color:var(--cyan);}
+  .hud-row{display:flex;gap:18px;align-items:flex-start;}
+  /* Position HUDs */
+  #hud-pos{top:12px;left:12px;}
+  #hud-cmems{top:12px;right:12px;min-width:170px;}
+  #hud-health{top:12px;left:50%;transform:translateX(-50%);display:flex;gap:6px;padding:8px 12px;}
+  #hud-bottom{bottom:0;left:0;right:0;border-radius:0;border-left:none;border-right:none;border-bottom:none;max-height:42vh;display:flex;flex-direction:column;padding:0;}
+  /* Health pills */
+  .pill{display:flex;align-items:center;gap:5px;font-size:10px;font-family:'Roboto Mono',monospace;background:rgba(0,0,0,0.3);border-radius:20px;padding:3px 8px;border:1px solid var(--border);}
+  .pill .dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;}
+  .ok{border-color:rgba(0,255,159,0.3);} .ok .dot{background:var(--green);box-shadow:0 0 6px var(--green);}
+  .stale{border-color:rgba(255,179,0,0.3);} .stale .dot{background:var(--amber);box-shadow:0 0 6px var(--amber);}
+  .offline{border-color:rgba(255,71,87,0.3);} .offline .dot{background:var(--red);box-shadow:0 0 6px var(--red);}
+  /* Bottom panel */
+  #player-bar{background:rgba(5,13,26,0.95);border-top:1px solid var(--border);padding:10px 14px;display:flex;align-items:center;gap:12px;flex-shrink:0;}
+  #arm-btn{background:linear-gradient(135deg,var(--amber),#ff6b00);color:#000;border:none;border-radius:8px;padding:8px 16px;font-weight:700;font-size:12px;cursor:pointer;letter-spacing:1px;animation:pulse 2s infinite;}
+  @keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(255,179,0,0.4);}50%{box-shadow:0 0 0 8px rgba(255,179,0,0);}}
+  #armed-badge{display:none;background:rgba(0,255,159,0.12);border:1px solid var(--green);border-radius:6px;padding:4px 10px;font-size:10px;color:var(--green);font-family:'Roboto Mono',monospace;letter-spacing:1px;}
+  #now-playing-wrap{flex:1;min-width:0;}
+  #now-playing-type{font-size:9px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;}
+  #now-playing-text{font-size:11px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px;}
+  audio{width:200px;height:28px;accent-color:var(--cyan);flex-shrink:0;}
+  #inbox-list{overflow-y:auto;flex:1;padding:8px 14px 4px;}
+  .inbox-item{display:flex;align-items:flex-start;gap:8px;padding:6px 0;border-bottom:1px solid rgba(0,212,255,0.07);}
+  .inbox-item:last-child{border-bottom:none;}
+  .inbox-source{flex-shrink:0;font-size:9px;font-family:'Roboto Mono',monospace;letter-spacing:1px;padding:2px 6px;border-radius:4px;margin-top:1px;}
+  .src-pyxis{background:rgba(0,212,255,0.15);color:var(--cyan);border:1px solid rgba(0,212,255,0.3);}
+  .src-cmems{background:rgba(0,255,159,0.12);color:var(--green);border:1px solid rgba(0,255,159,0.3);}
+  .src-other{background:rgba(74,122,155,0.2);color:var(--dim);border:1px solid rgba(74,122,155,0.3);}
+  .inbox-msg{font-size:11px;color:var(--text);line-height:1.4;}
+  /* CMEMS stale badge */
+  .badge-stale{display:inline-block;background:rgba(255,179,0,0.15);border:1px solid var(--amber);border-radius:4px;padding:1px 6px;font-size:9px;color:var(--amber);font-family:'Roboto Mono',monospace;letter-spacing:1px;}
+  .badge-live{display:inline-block;background:rgba(0,255,159,0.12);border:1px solid var(--green);border-radius:4px;padding:1px 6px;font-size:9px;color:var(--green);font-family:'Roboto Mono',monospace;letter-spacing:1px;}
+  /* Map markers */
+  .vessel-glow{filter:drop-shadow(0 0 6px #00d4ff);}
+  @keyframes aisPulse{
+    0%,100%{opacity:1;box-shadow:0 0 6px currentColor;}
+    50%{opacity:0.6;box-shadow:0 0 14px currentColor;}
+  }
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<!-- Position HUD -->
+<div class="hud" id="hud-pos">
+  <div class="hud-row">
+    <div><div class="hud-label">Position</div><div class="hud-val" id="h-pos">--</div></div>
+    <div><div class="hud-label">SOG</div><div class="hud-val" id="h-sog">--</div></div>
+    <div><div class="hud-label">HDG</div><div class="hud-val" id="h-hdg">--</div></div>
+  </div>
+</div>
+
+<!-- Health strip -->
+<div class="hud" id="hud-health">
+  <div class="pill offline" id="pill-cmems"><div class="dot"></div>CMEMS</div>
+  <div class="pill offline" id="pill-meteo"><div class="dot"></div>METEO</div>
+  <div class="pill offline" id="pill-alerts"><div class="dot"></div>ALERTS</div>
+  <div class="pill offline" id="pill-depth"><div class="dot"></div>DEPTH</div>
+</div>
+
+<!-- CMEMS HUD -->
+<div class="hud" id="hud-cmems">
+  <div class="hud-label">CMEMS OCEAN DATA <span id="cmems-badge" class="badge-stale">UPDATING</span></div>
+  <div class="hud-row" style="margin-top:6px;">
+    <div><div class="hud-label">Wave</div><div class="hud-val" id="c-wave">--</div></div>
+    <div><div class="hud-label">Swell</div><div class="hud-val" id="c-swell">--</div></div>
+  </div>
+  <div class="hud-row" style="margin-top:6px;">
+    <div><div class="hud-label">Current</div><div class="hud-val" id="c-curr">--</div></div>
+    <div><div class="hud-label">SST</div><div class="hud-val" id="c-sst">--</div></div>
+  </div>
+</div>
+
+<!-- Bottom panel: player + inbox -->
+<div class="hud" id="hud-bottom">
+  <div id="player-bar">
+    <button id="arm-btn" onclick="armAudio()">Ã¢Å¡Â¡ TAP TO ARM AUTO-PLAY</button>
+    <div id="armed-badge">Ã¢â€“Â¶ AUTO-PLAY ARMED</div>
+    <div id="now-playing-wrap">
+      <div id="now-playing-type">STANDBY</div>
+      <div id="now-playing-text">No briefing yet</div>
+    </div>
+    <audio id="mainAudio" controls></audio>
+    <button onclick="clearAudio()" style="background:rgba(255,71,87,0.12);border:1px solid rgba(255,71,87,0.4);color:#ff4757;font-size:10px;font-weight:bold;padding:4px 10px;border-radius:4px;cursor:pointer;letter-spacing:1px;" title="Delete all audio reports from server">Ã°Å¸â€”â€˜ CLEAR REPORTS</button>
+  </div>
+  <div id="inbox-list"><div style="color:var(--dim);font-size:11px;text-align:center;padding:8px;">Loading messages...</div></div>
+</div>
+
+<script>
+let map, pyxisMarker, watchMarker, isInit=false;
+let autoPlayArmed=false, playedIds=new Set(), audioQueue=[], isPlaying=false;
+let lastLat=0, lastLon=0;
+
+// Ã¢â€â‚¬Ã¢â€â‚¬ Map init Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+map = L.map('map',{zoomControl:false,attributionControl:false}).setView([-38.487,145.620],10);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{maxZoom:20}).addTo(map);
+
+const vesselIcon = L.divIcon({className:'',html:'<div class="vessel-glow" style="font-size:26px;color:#00d4ff;line-height:1;">&#x25B2;</div>',iconSize:[26,26],iconAnchor:[13,13]});
+const crewIcon   = L.divIcon({className:'',html:'<div style="width:14px;height:14px;border-radius:50%;background:#00ff9f;border:2px solid #fff;box-shadow:0 0 8px #00ff9f;cursor:move;" title="CREW - Drag to reposition"></div>',iconSize:[14,14],iconAnchor:[7,7]});
+
+pyxisMarker = L.marker([0,0],{icon:vesselIcon,draggable:true}).addTo(map);
+pyxisMarker.on('dragend',async function(e){ const {lat,lng}=e.target.getLatLng(); try{ const r=await fetch('/set_vessel_pos',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Basic '+btoa('admin:manta')},body:JSON.stringify({lat,lon:lng})}); const d=await r.json(); if(d.snapped){pyxisMarker.setLatLng([d.lat,d.lon]);} }catch(ex){} });
+watchMarker = L.marker([0,0],{icon:crewIcon,draggable:true}).addTo(map);
+watchMarker.on('dragend',async function(e){ const {lat,lng}=e.target.getLatLng(); try{ const r=await fetch('/set_crew_pos',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Basic '+btoa('admin:manta')},body:JSON.stringify({lat,lon:lng})}); const d=await r.json(); if(d.snapped){watchMarker.setLatLng([d.lat,d.lon]);} }catch(ex){} });
+function armAudio(){
+  const ctx=new (window.AudioContext||window.webkitAudioContext)();
+  const buf=ctx.createBuffer(1,1,22050);
+  const src=ctx.createBufferSource(); src.buffer=buf; src.connect(ctx.destination); src.start(0);
+  autoPlayArmed=true;
+  // Reset queue state on arm so stale pre-arm history never replays
+  playedIds=new Set(); audioQueue=[]; isPlaying=false;
+  document.getElementById('arm-btn').style.display='none';
+  document.getElementById('armed-badge').style.display='block';
+}
+
+async function clearAudio(){
+  if(!confirm('Delete all audio reports from server?')) return;
+  try{
+    await fetch('/clear_audio',{method:'POST',headers:{'Authorization':'Basic '+btoa('admin:manta')}});
+    // Also reset local queue
+    audioQueue=[]; playedIds=new Set(); isPlaying=false;
+    document.getElementById('mainAudio').pause();
+    document.getElementById('now-playing-type').innerText='STANDBY';
+    document.getElementById('now-playing-text').innerText='Audio history cleared';
+    document.getElementById('inbox-list').innerHTML='<div style="color:var(--dim);font-size:11px;text-align:center;padding:8px;">Cleared Ã¢Å“â€œ</div>';
+  }catch(e){alert('Clear failed: '+e);}
+}
+
+function playNextInQueue(){
+  if(isPlaying||audioQueue.length===0) return;
+  isPlaying=true;
+  // Always play from queue head (already sorted: urgent/newest first)
+  const item=audioQueue.shift();
+  const a=document.getElementById('mainAudio');
+  a.src='/audio?id='+item.id+'&bust='+Date.now();
+  a.load();
+  a.play().then(()=>{
+    const typeLabel=(item.type||'status').toUpperCase();
+    const urgentTypes=['MAYDAY','SYSTEM_STATUS','KINETIC_THREAT'];
+    const colour=urgentTypes.includes(typeLabel)?'#ff4757':'#00d4ff';
+    document.getElementById('now-playing-type').innerText=typeLabel;
+    document.getElementById('now-playing-type').style.color=colour;
+    document.getElementById('now-playing-text').innerText=item.text?item.text.substring(0,120)+'...':'';
+  }).catch(e=>{isPlaying=false;setTimeout(playNextInQueue,500);});
+  a.onended=()=>{isPlaying=false;setTimeout(playNextInQueue,500);};
+}
+
+// Ã¢â€â‚¬Ã¢â€â‚¬ Main polling tick Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+async function tick(){
+  try{
+    const r=await fetch('/status_api?bust='+Date.now()), d=await r.json();
+    lastLat=d.lat||lastLat; lastLon=d.lon||lastLon;
+
+    pyxisMarker.setLatLng([lastLat,lastLon]);
+    document.getElementById('h-pos').innerText=lastLat.toFixed(4)+', '+lastLon.toFixed(4);
+    document.getElementById('h-sog').innerText=(d.sog!=null?(+d.sog).toFixed(1)+' kn':'--');
+    document.getElementById('h-hdg').innerText=(d.heading!=null?Math.round(d.heading)+'Ã‚Â°':'--');
+
+    const wLat=d.CREW_LAT||0, wLon=d.CREW_LON||0;
+    if(wLat!==0){ watchMarker.setLatLng([wLat,wLon]); }
+
+    if(!isInit&&(lastLat!==0||wLat!==0)){
+      const grp=wLat!==0?L.featureGroup([pyxisMarker,watchMarker]):L.featureGroup([pyxisMarker]);
+      try{map.fitBounds(grp.getBounds().pad(0.4),{maxZoom:13});}catch(e){}
+      isInit=true;
+    }
+
+    // Auto-play queue Ã¢â‚¬â€ newest-first, fresh reports only
+    if(d.audio_history&&autoPlayArmed){
+      const URGENT=['MAYDAY','KINETIC_THREAT','SYSTEM_STATUS'];
+      const MAX_AGE_S=600; // Only auto-play reports < 10 minutes old
+      const nowSec=Date.now()/1000;
+      // Sort: urgent first, then newest ts first
+      const sorted=[...d.audio_history].sort((a,b)=>{
+        const aUr=URGENT.includes((a.type||'').toUpperCase())?1:0;
+        const bUr=URGENT.includes((b.type||'').toUpperCase())?1:0;
+        if(bUr!==aUr) return bUr-aUr;
+        return (b.ts||0)-(a.ts||0);
+      });
+      // Mark stale items as seen (inbox only) Ã¢â‚¬â€ never auto-play old reports
+      sorted.forEach(h=>{
+        if((nowSec-(h.ts||0))>MAX_AGE_S) playedIds.add(h.id);
+      });
+      // Collect fresh unplayed items only
+      const newItems=sorted.filter(h=>h.ready!==false&&!playedIds.has(h.id));
+      newItems.forEach(h=>playedIds.add(h.id));
+      if(newItems.length>0){
+        // Atomically prepend batch Ã¢â‚¬â€ preserves newest-first order
+        audioQueue.splice(0,0,...newItems);
+        // Interrupt non-urgent playback if urgent report just arrived
+        const hasUrgent=newItems.some(h=>URGENT.includes((h.type||'').toUpperCase()));
+        if(hasUrgent&&isPlaying){
+          const curType=(document.getElementById('now-playing-type').innerText||'');
+          if(!URGENT.includes(curType)){
+            document.getElementById('mainAudio').pause();
+            isPlaying=false;
+          }
+        }
+      }
+      playNextInQueue();
+    }
+
+  }catch(e){console.error(e);}
+}
+
+// Ã¢â€â‚¬Ã¢â€â‚¬ CMEMS polling Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+async function tickCmems(){
+  try{
+    const r=await fetch('/sea_state_json'), d=await r.json();
+    document.getElementById('c-wave').innerText=d.wave_h&&d.wave_h!='n/a'?d.wave_h:'--';
+    document.getElementById('c-swell').innerText=d.swell_h&&d.swell_h!='n/a'?d.swell_h:'--';
+    document.getElementById('c-curr').innerText=d.curr_v&&d.curr_v!='n/a'?d.curr_v:'--';
+    document.getElementById('c-sst').innerText=d.sst_c&&d.sst_c!='n/a'?d.sst_c:'--';
+    const badge=document.getElementById('cmems-badge');
+    if(d.cmems_stale||d.wave_h==='n/a'){badge.className='badge-stale';badge.innerText='UPDATING';}
+    else{badge.className='badge-live';badge.innerText='LIVE';}
+  }catch(e){}
+}
+
+// Ã¢â€â‚¬Ã¢â€â‚¬ Health strip Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+async function tickHealth(){
+  try{
+    const r=await fetch('/health'), d=await r.json();
+    const map2={cmems:'pill-cmems',meteo:'pill-meteo',weather_alerts:'pill-alerts',bathymetry:'pill-depth'};
+    for(const [key,pid] of Object.entries(map2)){
+      const el=document.getElementById(pid); if(!el) continue;
+      const w=d[key];
+      el.className='pill '+((!w||!w.ok)?'offline':(w.age_min!=null&&w.age_min>90?'stale':'ok'));
+    }
+  }catch(e){}
+}
+
+// Ã¢â€â‚¬Ã¢â€â‚¬ Inbox panel Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+async function tickInbox(){
+  try{
+    const r=await fetch('/inbox_sync'), data=await r.json();
+    const msgs=data.messages||[];
+    if(msgs.length===0){document.getElementById('inbox-list').innerHTML='<div style="color:var(--dim);font-size:11px;text-align:center;padding:8px;">No messages yet</div>';return;}
+    const srcClass=s=>s==='PYXIS'?'src-pyxis':s==='CMEMS'?'src-cmems':'src-other';
+    // Use /status_api audio_history for full text of system messages
+    document.getElementById('inbox-list').innerHTML=msgs.slice().reverse().map(m=>{
+      const src=(m.id||'').length<15?'PYXIS':'SYS';
+      const lines=(m.lines||[]).join(' ').trim()||m.title||'';
+      return `<div class="inbox-item"><span class="inbox-source ${srcClass(m.title&&m.title.includes('CMEMS')?'CMEMS':'PYXIS')}">${m.title&&m.title.includes('CMEMS')?'CMEMS':'PYXIS'}</span><div class="inbox-msg">${lines.substring(0,160)}</div></div>`;
+    }).join('');
+  }catch(e){}
+}
+
+setInterval(tick,3000); tick();
+setInterval(tickCmems,15000); tickCmems();
+setInterval(tickHealth,30000); tickHealth();
+setInterval(tickInbox,10000); tickInbox();
+</script>
+</body>
+</html>
