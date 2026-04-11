@@ -2930,9 +2930,33 @@ def st_api():
         s = pyxis_state.get_state("SIM")
         s.pop("audio_history", None)
             
+            real_radar = d.get("radar_contacts", [])
+            sim_radar = s.get("radar_contacts", [])
+
+            import time
+            if s and (time.time() - s.get("last_sim_update", 0) <= 15.0):
+                d.update(s)
+                # Map Headless Sim Boat Coords to Global Pyxis Coords
+                if not d.get("onboard_mode", False) and d.get("BOAT_LAT", 0.0) != 0.0:
+                    d["lat"] = d["BOAT_LAT"]
+                    d["lon"] = d["BOAT_LON"]
+                    last_known_lat = d["lat"]
+                    last_known_lon = d["lon"]
+
+                if real_radar and sim_radar:
+                    d["radar_contacts"] = real_radar + sim_radar
+                elif real_radar:
+                    d["radar_contacts"] = real_radar
+                elif sim_radar:
+                    d["radar_contacts"] = sim_radar
+            else:
+                # Simulator offline -> MOOR PYXIS AUTONOMOUSLY (DECOUPLED FROM WATCH)
+                d["lat"] = last_known_lat
+                d["lon"] = last_known_lon
+                d["radar_contacts"] = real_radar  # STRIP GHOST SIMULATOR RADAR CONTACTS
         real_radar = d.get("radar_contacts", [])
         sim_radar = s.get("radar_contacts", [])
-
+            
         import time
         if s and (time.time() - s.get("last_sim_update", 0) <= 15.0):
             d.update(s)
