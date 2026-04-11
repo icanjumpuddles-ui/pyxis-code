@@ -1,0 +1,54 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Vessel Pyxis Incoming Messages</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <style>
+        body { background: #000; color: #0f0; font-family: monospace; padding: 15px; margin: 0; }
+        h2 { text-align: center; color: #fff; margin-top: 5px; margin-bottom: 20px; text-transform: uppercase; font-size: 20px; border-bottom: 2px solid #0f0; padding-bottom: 10px; }
+        .msg { border: 1px solid #0f0; padding: 15px; margin-bottom: 15px; background: rgba(0, 40, 0, 0.4); border-radius: 5px; box-shadow: 0 0 10px rgba(0,255,0,0.1); word-wrap: break-word; }
+        .type { font-weight: bold; color: #0f0; font-size: 1.1em; border-bottom: 1px dashed #0a0; padding-bottom: 5px; margin-bottom: 10px; text-transform: uppercase;}
+        .text { font-size: 15px; line-height: 1.5; color: #cfc; white-space: pre-wrap; }
+        .tools { display: flex; justify-content: space-between; margin-top: 20px; margin-bottom: 40px; }
+        button { background: #0f0; color: #000; border: none; padding: 15px; font-weight: bold; font-size: 16px; width: 48%; border-radius: 4px; }
+        button:active { background: #fff; transform: scale(0.98); }
+    </style>
+</head>
+<body>
+    <h2>Vessel Pyxis incoming messages</h2>
+    <div id="msgContainer">Loading...</div>
+    <div class="tools">
+        <button onclick="window.location.href='/lite'">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ BACK</button>
+        <button onclick="fetchMsgs()">REFRESH</button>
+    </div>
+    <script>
+        async function fetchMsgs() {
+            try {
+                const res = await fetch('/status_api');
+                const d = await res.json();
+                const container = document.getElementById('msgContainer');
+                container.innerHTML = '';
+
+                if (d.audio_history && d.audio_history.length > 0) {
+                    const rev = [...d.audio_history].reverse();
+                    rev.forEach(m => {
+                        if (m.text && m.text.trim() !== "") {
+                            const div = document.createElement('div');
+                            div.className = 'msg';
+                            div.innerHTML = `<div class="type">[${m.type || 'SYS'}]</div><div class="text">${m.text.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</div>`;
+                            container.appendChild(div);
+                        }
+                    });
+                } else {
+                    container.innerHTML = '<div class="msg" style="text-align:center;">NO NEW MESSAGES</div>';
+                }
+            } catch (e) {
+                document.getElementById('msgContainer').innerHTML = '<div class="msg" style="color:#f00; border-color:#f00;">CONNECTION ERROR</div>';
+            }
+        }
+        fetchMsgs();
+        setInterval(fetchMsgs, 10000);
+    </script>
+</body>
+</html>
