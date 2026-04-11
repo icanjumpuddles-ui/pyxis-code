@@ -97,15 +97,7 @@ def intercept_crew_gps():
             if lat_clean and lon_clean:
                 parsed_lat = float(lat_clean)
                 parsed_lon = float(lon_clean)
-                sim_file = os.path.join(B, 'sim_telemetry.json')
-                if os.path.exists(sim_file):
-                    with open(sim_file, 'r') as f:
-                        try: d = json.load(f)
-                        except: d = {}
-                    d['CREW_LAT'] = parsed_lat
-                    d['CREW_LON'] = parsed_lon
-                    with open(sim_file, 'w') as f:
-                        json.dump(d, f)
+                pyxis_state.update_state("SIM", {'CREW_LAT': parsed_lat, 'CREW_LON': parsed_lon})
     except Exception as e:
         pass
 
@@ -544,7 +536,7 @@ def brain_worker():
             
             # Ensure the state is known as "building audio"
             try:
-                with open(DT, "r") as f: st = json.load(f)
+                st = pyxis_state.get_state("DT")
                 history = st.get("audio_history", [])
                 
                 # Check if this text was already pre-staged by the HTTP handler
@@ -560,7 +552,7 @@ def brain_worker():
                     history.append({"id": new_id, "type": rtype, "ts": time.time(), "ready": False, "text": txt})
                 
                 st["audio_history"] = history[-15:]
-                with open(DT, "w") as f: json.dump(st, f)
+                pyxis_state.update_state("DT", st, replace=True)
             except Exception as e: log(f"Pre-write err: {e}")
 
             out_p, tmp = B+f"/audio_{new_id}.wav", B+f"/audio_{new_id}.wav.tmp"
@@ -629,7 +621,7 @@ def brain_worker():
                 except Exception as e:
                     log(f"Kokoro exception: {e}")
 
-            with open(DT, "r") as f: st = json.load(f)
+            st = pyxis_state.get_state("DT")
             st.update({f"{rtype}_id": new_id, "lat": la, "lon": lo})
             
             history = st.get("audio_history", [])
@@ -638,7 +630,7 @@ def brain_worker():
                     h["ready"] = True
             st["audio_history"] = history[-15:] # Keep last 15 reports
             
-            with open(DT, "w") as f: json.dump(st, f)
+            pyxis_state.update_state("DT", st, replace=True)
         except Exception as e: log(f"BRAIN ERR: {e}")
         task_queue.task_done()
 
