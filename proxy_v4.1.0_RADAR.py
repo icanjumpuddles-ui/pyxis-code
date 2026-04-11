@@ -25,7 +25,7 @@ MAINTENANCE (Software & AI/Network Engineers):
 import os, requests, time, json, sqlite3, math, re, sys, threading, queue, textwrap, uuid, socket, concurrent.futures, aiohttp
 import asyncio, websockets
 from datetime import datetime, timezone
-from flask import Flask, request, jsonify, send_file, make_response, Response
+from flask import Flask, request, jsonify, send_file, make_response, Response, render_template
 try:
     from google.cloud import texttospeech as gctts
 except ImportError:
@@ -111,10 +111,6 @@ def intercept_crew_gps():
 
 load_dotenv(os.path.join(B, ".env"), override=True)
 DB, DT, SIM, AN = os.path.join(B, "pyxis_logs.db"), os.path.join(B, "latest_sector.json"), os.path.join(B, "sim_telemetry.json"), os.path.join(B, "anchor_state.json")
-
-from state_manager import PyxisState
-pyxis_state = PyxisState(SIM, DT)
-
 ROUTE_FILE = os.path.join(B, "active_route.json")
 GMDSS_CACHE_FILE = os.path.join(B, "gmdss_cache.json")
 SWPC_CACHE_FILE = os.path.join(B, "swpc_cache.json")
@@ -1137,8 +1133,16 @@ def get_navarea(lat, lon):
     elif lat >= 67: return "XVII" # Arctic
     else: return "UNKNOWN"
 
-def calculate_intel_feed(data):
+@app.route('/intel_feed', methods=['POST'])
+def intel_feed():
+    """
+    Direct HTTP endpoint designed for the Pyxis Lite dashboard.
+    Forces Google Gemini to immediately parse the GMDSS Navigational Warnings
+    cache, isolate the warnings localized to the user's NAVAREA, and synthesize
+    a raw JSON text report breaking down the top 5 kinetic/safety threats.
+    """
     try:
+        data = request.json or {}
         # Read real vessel position from sim telemetry, fall back to last known
         la, lo = last_known_lat, last_known_lon
         sim_sensors = {}
@@ -1326,24 +1330,12 @@ If genuinely no threats exist at this position, return {{"alerts": []}}."""
         
         try:
             res = json.loads(re.search(r'\{.*\}', resp.text, re.DOTALL).group())
-            return res, 200
+            return jsonify(res), 200
         except:
-            return {"alerts": [{"title": "OSINT Data", "desc": "Feed processing error."}]}, 200
+            return jsonify({"alerts": [{"title": "OSINT Data", "desc": "Feed processing error."}]}), 200
     except Exception as e:
         log(f"INTEL FEED ERR: {e}")
-        return {"error": str(e)}, 500
-
-@app.route('/intel_feed', methods=['POST'])
-def intel_feed():
-    """
-    Direct HTTP endpoint designed for the Pyxis Lite dashboard.
-    Forces Google Gemini to immediately parse the GMDSS Navigational Warnings
-    cache, isolate the warnings localized to the user's NAVAREA, and synthesize
-    a raw JSON text report breaking down the top 5 kinetic/safety threats.
-    """
-    data = request.json or {}
-    res, status_code = calculate_intel_feed(data)
-    return jsonify(res), status_code
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/system_status', methods=['POST'])
 @requires_auth
@@ -1630,14 +1622,6 @@ def get_active_ais_list(ref_lat=None, ref_lon=None):
     contacts = sorted(contacts, key=lambda c: (0 if _is_ais_vessel(c) else 1, c.get("range_nm", 9999)))
     return contacts
 
-def calculate_ports(la, lo):
-    client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-    p = f"""Position {la}, {lo}. List up to 5 major marinas/ports within 200nm. Return ONLY JSON: {{"destinations": ["Name", ...]}}"""
-    try:
-        resp = client.models.generate_content(model="gemini-2.5-flash", config=types.GenerateContentConfig(tools=[types.Tool(google_search=types.GoogleSearch())]), contents=p)
-        return json.loads(re.search(r'\{.*\}', resp.text, re.DOTALL).group())
-    except: return {"destinations": ["Scan Failed"]}
-
 @app.route('/find_ports', methods=['POST'])
 def find_ports():
     """
@@ -1646,20 +1630,12 @@ def find_ports():
     repair/refuel range of the current host coordinates.
     """
     la, lo = 25.1527, 55.3896
-    try:
-        data = request.json or {}
-        la = data.get("lat", la)
-        lo = data.get("lon", lo)
-    except: pass
-    return jsonify(calculate_ports(la, lo))
-
-def calculate_anchorage(la, lo):
     client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-    p = f"""Find 5 nearest safe anchorages to {la}, {lo} for 2.9m draft. Protected from wind. Return ONLY JSON: {{"destinations": ["Name", ...]}}"""
+    p = f"""Position {la}, {lo}. List up to 5 major marinas/ports within 200nm. Return ONLY JSON: {{"destinations": ["Name", ...]}}"""
     try:
         resp = client.models.generate_content(model="gemini-2.5-flash", config=types.GenerateContentConfig(tools=[types.Tool(google_search=types.GoogleSearch())]), contents=p)
-        return json.loads(re.search(r'\{.*\}', resp.text, re.DOTALL).group())
-    except: return {"destinations": ["Scan Failed"]}
+        return jsonify(json.loads(re.search(r'\{.*\}', resp.text, re.DOTALL).group()))
+    except: return jsonify({"destinations": ["Scan Failed"]})
 
 @app.route('/find_anchorage', methods=['POST'])
 def find_anchorage():
@@ -1668,12 +1644,13 @@ def find_anchorage():
     the names of 5 well-protected safe anchorages near the physical vessel.
     """
     la, lo = 25.1527, 55.3896
+    client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+    p = f"""Find 5 nearest safe anchorages to {la}, {lo} for 2.9m draft. Protected from wind. Return ONLY JSON: {{"destinations": ["Name", ...]}}"""
     try:
-        data = request.json or {}
-        la = data.get("lat", la)
-        lo = data.get("lon", lo)
-    except: pass
-    return jsonify(calculate_anchorage(la, lo))
+        resp = client.models.generate_content(model="gemini-2.5-flash", config=types.GenerateContentConfig(tools=[types.Tool(google_search=types.GoogleSearch())]), contents=p)
+        res = json.loads(re.search(r'\{.*\}', resp.text, re.DOTALL).group())
+        return jsonify(res)
+    except: return jsonify({"destinations": ["Scan Failed"]})
 
 @app.route('/voice_quota', methods=['POST'])
 def voice_quota():
@@ -1731,7 +1708,15 @@ def dec_to_nmea(dec, is_lat):
     else:
         return f"{deg:03d}{mins:07.4f},{dir_char}"
 
-def calculate_destination(dest, la, lo):
+@app.route('/set_destination', methods=['POST'])
+def set_dest():
+    """
+    Endpoint that accepts a raw string destination name and requests Gemini to
+    plot a viable 30-waypoint route utilizing pathfinding logic to avoid land
+    and shallow waters. Saves the final trace to 'active_route.json'.
+    """
+    d = request.json
+    dest, la, lo = d.get("destination"), d.get("lat"), d.get("lon")
     client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
     p = f"""Plot course from {la}, {lo} to {dest}. Use up to 30 waypoints. Avoid land. Consider safe depth contours and maritime hazards. Maintain a safe depth of at least 3m at all times. Return ONLY valid raw JSON: {{"waypoints": [[lat, lon], ...]}}"""
     try:
@@ -1771,22 +1756,8 @@ def calculate_destination(dest, la, lo):
                 log(f"NMEA Broadcast Err: {e}")
 
         task_queue.put(("routing", la, lo, "Course plotted to " + dest + " and transmitted to NMEA MFD."))
-        return {"status": "plotted"}
-    except: return {"error": "Err"}
-
-@app.route('/set_destination', methods=['POST'])
-def set_dest():
-    """
-    Endpoint that accepts a raw string destination name and requests Gemini to
-    plot a viable 30-waypoint route utilizing pathfinding logic to avoid land
-    and shallow waters. Saves the final trace to 'active_route.json'.
-    """
-    d = request.json or {}
-    dest, la, lo = d.get("destination"), d.get("lat"), d.get("lon")
-    res = calculate_destination(dest, la, lo)
-    if "error" in res:
-        return "Err", 500
-    return jsonify(res)
+        return jsonify({"status": "plotted"})
+    except: return "Err", 500
 
 @app.route('/clear_route', methods=['POST'])
 def clear_route():
@@ -2015,13 +1986,17 @@ def weather_radar(dummy=None):
     except:
         return "Err", 500
 
-def sim_in_logic(payload):
+@app.route('/sim_ingress', methods=['POST'])
+def sim_in():
     """
-    Calculates relative bearing/distance to Pyxis host from simulated targets.
+    The main hook for the Pygame Manta Simulator. It receives massive
+    JSON blocks of simulated BVR (Beyond Visual Range) radar targets
+    and calculates their relative bearing/distance to the Pyxis host.
     Identifies completely new contacts and instantly dispatches them 
     to the 'brain_worker' thread for audio synthesis (contact warnings).
     """
     global known_contacts, last_known_lat, last_known_lon
+    payload = request.json
     payload["last_sim_update"] = time.time()
     
     bLat = payload.get("BOAT_LAT", 0.0)
@@ -2031,7 +2006,8 @@ def sim_in_logic(payload):
     if bLat != 0.0 and bLon != 0.0:
         onboard = False
         try:
-            onboard = pyxis_state.get_state("DT").get("onboard_mode", False)
+            if os.path.exists(DT):
+                with open(DT,"r") as f: onboard = json.load(f).get("onboard_mode", False)
         except: pass
         if not onboard:
             payload["lat"] = bLat
@@ -2058,17 +2034,7 @@ def sim_in_logic(payload):
                 task_queue.put(("systems", c['lat'], c['lon'], report_txt))
                 
     payload.pop("audio_history", None)
-    pyxis_state.update_state("SIM", payload, replace=True)
-    return {"status": "OK"}
-
-@app.route('/sim_ingress', methods=['POST'])
-def sim_in():
-    """
-    The main hook for the Pygame Manta Simulator. It receives massive
-    JSON blocks of simulated BVR (Beyond Visual Range) radar targets.
-    """
-    payload = request.json or {}
-    sim_in_logic(payload)
+    with open(SIM, "w") as f: json.dump(payload, f)
     return "OK", 200
 
 @app.route('/adsb_contacts')
@@ -2829,12 +2795,17 @@ def handle_telem():
             if "BOAT_LAT" in payload: payload["lat"] = payload.pop("BOAT_LAT")
             if "BOAT_LON" in payload: payload["lon"] = payload.pop("BOAT_LON")
             payload["last_sim_update"] = time.time()
-            pyxis_state.update_state("SIM", payload)
-            existing = pyxis_state.get_state("SIM")
+            existing = {}
+            if os.path.exists(SIM):
+                try:
+                    with open(SIM, "r") as f: existing = json.load(f)
+                except: pass
+            existing.update(payload)
+            with open(SIM, "w") as f: json.dump(existing, f)
             # Write last_pos.json for external workers (e.g. adsb_worker)
             try:
-                lat_v = existing.get("lat")
-                lon_v = existing.get("lon")
+                lat_v = payload.get("lat") or existing.get("lat")
+                lon_v = payload.get("lon") or existing.get("lon")
                 if lat_v is not None and lon_v is not None:
                     pos_file = os.path.join(B, "last_pos.json")
                     with open(pos_file, "w") as pf:
@@ -2845,9 +2816,15 @@ def handle_telem():
             return jsonify({"error": str(e)}), 500
             
     try:
-        d = pyxis_state.get_state("DT")
-        s = pyxis_state.get_state("SIM")
-        d.update(s)
+        d = {}
+        if os.path.exists(DT):
+            try:
+                with open(DT,"r") as f: d=json.load(f)
+            except: pass
+        if os.path.exists(SIM):
+            try:
+                with open(SIM,"r") as f: s=json.load(f); d.update(s)
+            except: pass
         return jsonify(d)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -2951,8 +2928,11 @@ def st_api():
     """
     try:
         global last_known_lat, last_known_lon
-
-        d = pyxis_state.get_state("DT")
+        d = {}
+        if os.path.exists(DT):
+            try:
+                with open(DT,"r") as f: d=json.load(f)
+            except: pass
             
         # UI OVERRIDE: Lock GPS to Captain's Watch
         if d.get("onboard_mode", False):
@@ -2961,33 +2941,41 @@ def st_api():
             last_known_lat = d["lat"]
             last_known_lon = d["lon"]
         
-        s = pyxis_state.get_state("SIM")
-        s.pop("audio_history", None)
+        if os.path.exists(SIM):
+            try:
+                # MANDATORY FAST-READ FALLBACK:
+                # headless_sim.py writes to this JSON thousands of times per minute.
+                # These try/except blocks prevent 'JSONDecodeError: Extra data' from silently
+                # crashing the status_api thread mid-collision and dropping the audio queue.
+                with open(SIM,"r") as f: s=json.load(f)
+            except: s={}
             
-        real_radar = d.get("radar_contacts", [])
-        sim_radar = s.get("radar_contacts", [])
+            s.pop("audio_history", None)
             
-        import time
-        if s and (time.time() - s.get("last_sim_update", 0) <= 15.0):
-            d.update(s)
-            # Map Headless Sim Boat Coords to Global Pyxis Coords
-            if not d.get("onboard_mode", False) and d.get("BOAT_LAT", 0.0) != 0.0:
-                d["lat"] = d["BOAT_LAT"]
-                d["lon"] = d["BOAT_LON"]
-                last_known_lat = d["lat"]
-                last_known_lon = d["lon"]
+            real_radar = d.get("radar_contacts", [])
+            sim_radar = s.get("radar_contacts", [])
 
-            if real_radar and sim_radar:
-                d["radar_contacts"] = real_radar + sim_radar
-            elif real_radar:
-                d["radar_contacts"] = real_radar
-            elif sim_radar:
-                d["radar_contacts"] = sim_radar
-        else:
-            # Simulator offline -> MOOR PYXIS AUTONOMOUSLY (DECOUPLED FROM WATCH)
-            d["lat"] = last_known_lat
-            d["lon"] = last_known_lon
-            d["radar_contacts"] = real_radar  # STRIP GHOST SIMULATOR RADAR CONTACTS
+            import time
+            if s and (time.time() - s.get("last_sim_update", 0) <= 15.0):
+                d.update(s)
+                # Map Headless Sim Boat Coords to Global Pyxis Coords
+                if not d.get("onboard_mode", False) and d.get("BOAT_LAT", 0.0) != 0.0:
+                    d["lat"] = d["BOAT_LAT"]
+                    d["lon"] = d["BOAT_LON"]
+                    last_known_lat = d["lat"]
+                    last_known_lon = d["lon"]
+
+                if real_radar and sim_radar:
+                    d["radar_contacts"] = real_radar + sim_radar
+                elif real_radar:
+                    d["radar_contacts"] = real_radar
+                elif sim_radar:
+                    d["radar_contacts"] = sim_radar
+            else:
+                # Simulator offline -> MOOR PYXIS AUTONOMOUSLY (DECOUPLED FROM WATCH)
+                d["lat"] = last_known_lat
+                d["lon"] = last_known_lon
+                d["radar_contacts"] = real_radar  # STRIP GHOST SIMULATOR RADAR CONTACTS
 
             
         if os.path.exists(GEO_CACHE_FILE):
@@ -3090,281 +3078,8 @@ def player_lite():
     Dark glassmorphism tactical theme with auto-play audio queue,
     CMEMS HUD, system health strip, and inbox panel.
     """
-    return """<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8"/>
-<title>PYXIS LIVE TRACKER</title>
-<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<link rel="preconnect" href="https://fonts.googleapis.com"/>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&family=Roboto+Mono:wght@400;600&display=swap" rel="stylesheet"/>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<style>
-  :root{--bg:#050d1a;--glass:rgba(8,20,45,0.75);--border:rgba(0,212,255,0.18);--cyan:#00d4ff;--green:#00ff9f;--amber:#ffb300;--red:#ff4757;--text:#c8e6ff;--dim:#4a7a9b;}
-  *{box-sizing:border-box;margin:0;padding:0;}
-  body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;overflow:hidden;height:100vh;width:100vw;}
-  #map{position:absolute;inset:0;z-index:1;}
-  .hud{position:absolute;z-index:10;background:var(--glass);border:1px solid var(--border);border-radius:12px;padding:10px 14px;backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);box-shadow:0 4px 24px rgba(0,0,0,0.5);}
-  .hud-label{font-family:'Roboto Mono',monospace;font-size:9px;letter-spacing:2px;text-transform:uppercase;color:var(--dim);margin-bottom:2px;}
-  .hud-val{font-family:'Roboto Mono',monospace;font-size:13px;font-weight:600;color:var(--cyan);}
-  .hud-row{display:flex;gap:18px;align-items:flex-start;}
-  /* Position HUDs */
-  #hud-pos{top:12px;left:12px;}
-  #hud-cmems{top:12px;right:12px;min-width:170px;}
-  #hud-health{top:12px;left:50%;transform:translateX(-50%);display:flex;gap:6px;padding:8px 12px;}
-  #hud-bottom{bottom:0;left:0;right:0;border-radius:0;border-left:none;border-right:none;border-bottom:none;max-height:42vh;display:flex;flex-direction:column;padding:0;}
-  /* Health pills */
-  .pill{display:flex;align-items:center;gap:5px;font-size:10px;font-family:'Roboto Mono',monospace;background:rgba(0,0,0,0.3);border-radius:20px;padding:3px 8px;border:1px solid var(--border);}
-  .pill .dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;}
-  .ok{border-color:rgba(0,255,159,0.3);} .ok .dot{background:var(--green);box-shadow:0 0 6px var(--green);}
-  .stale{border-color:rgba(255,179,0,0.3);} .stale .dot{background:var(--amber);box-shadow:0 0 6px var(--amber);}
-  .offline{border-color:rgba(255,71,87,0.3);} .offline .dot{background:var(--red);box-shadow:0 0 6px var(--red);}
-  /* Bottom panel */
-  #player-bar{background:rgba(5,13,26,0.95);border-top:1px solid var(--border);padding:10px 14px;display:flex;align-items:center;gap:12px;flex-shrink:0;}
-  #arm-btn{background:linear-gradient(135deg,var(--amber),#ff6b00);color:#000;border:none;border-radius:8px;padding:8px 16px;font-weight:700;font-size:12px;cursor:pointer;letter-spacing:1px;animation:pulse 2s infinite;}
-  @keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(255,179,0,0.4);}50%{box-shadow:0 0 0 8px rgba(255,179,0,0);}}
-  #armed-badge{display:none;background:rgba(0,255,159,0.12);border:1px solid var(--green);border-radius:6px;padding:4px 10px;font-size:10px;color:var(--green);font-family:'Roboto Mono',monospace;letter-spacing:1px;}
-  #now-playing-wrap{flex:1;min-width:0;}
-  #now-playing-type{font-size:9px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;}
-  #now-playing-text{font-size:11px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px;}
-  audio{width:200px;height:28px;accent-color:var(--cyan);flex-shrink:0;}
-  #inbox-list{overflow-y:auto;flex:1;padding:8px 14px 4px;}
-  .inbox-item{display:flex;align-items:flex-start;gap:8px;padding:6px 0;border-bottom:1px solid rgba(0,212,255,0.07);}
-  .inbox-item:last-child{border-bottom:none;}
-  .inbox-source{flex-shrink:0;font-size:9px;font-family:'Roboto Mono',monospace;letter-spacing:1px;padding:2px 6px;border-radius:4px;margin-top:1px;}
-  .src-pyxis{background:rgba(0,212,255,0.15);color:var(--cyan);border:1px solid rgba(0,212,255,0.3);}
-  .src-cmems{background:rgba(0,255,159,0.12);color:var(--green);border:1px solid rgba(0,255,159,0.3);}
-  .src-other{background:rgba(74,122,155,0.2);color:var(--dim);border:1px solid rgba(74,122,155,0.3);}
-  .inbox-msg{font-size:11px;color:var(--text);line-height:1.4;}
-  /* CMEMS stale badge */
-  .badge-stale{display:inline-block;background:rgba(255,179,0,0.15);border:1px solid var(--amber);border-radius:4px;padding:1px 6px;font-size:9px;color:var(--amber);font-family:'Roboto Mono',monospace;letter-spacing:1px;}
-  .badge-live{display:inline-block;background:rgba(0,255,159,0.12);border:1px solid var(--green);border-radius:4px;padding:1px 6px;font-size:9px;color:var(--green);font-family:'Roboto Mono',monospace;letter-spacing:1px;}
-  /* Map markers */
-  .vessel-glow{filter:drop-shadow(0 0 6px #00d4ff);}
-  @keyframes aisPulse{
-    0%,100%{opacity:1;box-shadow:0 0 6px currentColor;}
-    50%{opacity:0.6;box-shadow:0 0 14px currentColor;}
-  }
-</style>
-</head>
-<body>
-
-<div id="map"></div>
-
-<!-- Position HUD -->
-<div class="hud" id="hud-pos">
-  <div class="hud-row">
-    <div><div class="hud-label">Position</div><div class="hud-val" id="h-pos">--</div></div>
-    <div><div class="hud-label">SOG</div><div class="hud-val" id="h-sog">--</div></div>
-    <div><div class="hud-label">HDG</div><div class="hud-val" id="h-hdg">--</div></div>
-  </div>
-</div>
-
-<!-- Health strip -->
-<div class="hud" id="hud-health">
-  <div class="pill offline" id="pill-cmems"><div class="dot"></div>CMEMS</div>
-  <div class="pill offline" id="pill-meteo"><div class="dot"></div>METEO</div>
-  <div class="pill offline" id="pill-alerts"><div class="dot"></div>ALERTS</div>
-  <div class="pill offline" id="pill-depth"><div class="dot"></div>DEPTH</div>
-</div>
-
-<!-- CMEMS HUD -->
-<div class="hud" id="hud-cmems">
-  <div class="hud-label">CMEMS OCEAN DATA <span id="cmems-badge" class="badge-stale">UPDATING</span></div>
-  <div class="hud-row" style="margin-top:6px;">
-    <div><div class="hud-label">Wave</div><div class="hud-val" id="c-wave">--</div></div>
-    <div><div class="hud-label">Swell</div><div class="hud-val" id="c-swell">--</div></div>
-  </div>
-  <div class="hud-row" style="margin-top:6px;">
-    <div><div class="hud-label">Current</div><div class="hud-val" id="c-curr">--</div></div>
-    <div><div class="hud-label">SST</div><div class="hud-val" id="c-sst">--</div></div>
-  </div>
-</div>
-
-<!-- Bottom panel: player + inbox -->
-<div class="hud" id="hud-bottom">
-  <div id="player-bar">
-    <button id="arm-btn" onclick="armAudio()">Ã¢Å¡Â¡ TAP TO ARM AUTO-PLAY</button>
-    <div id="armed-badge">Ã¢â€“Â¶ AUTO-PLAY ARMED</div>
-    <div id="now-playing-wrap">
-      <div id="now-playing-type">STANDBY</div>
-      <div id="now-playing-text">No briefing yet</div>
-    </div>
-    <audio id="mainAudio" controls></audio>
-    <button onclick="clearAudio()" style="background:rgba(255,71,87,0.12);border:1px solid rgba(255,71,87,0.4);color:#ff4757;font-size:10px;font-weight:bold;padding:4px 10px;border-radius:4px;cursor:pointer;letter-spacing:1px;" title="Delete all audio reports from server">Ã°Å¸â€”â€˜ CLEAR REPORTS</button>
-  </div>
-  <div id="inbox-list"><div style="color:var(--dim);font-size:11px;text-align:center;padding:8px;">Loading messages...</div></div>
-</div>
-
-<script>
-let map, pyxisMarker, watchMarker, isInit=false;
-let autoPlayArmed=false, playedIds=new Set(), audioQueue=[], isPlaying=false;
-let lastLat=0, lastLon=0;
-
-// Ã¢â€â‚¬Ã¢â€â‚¬ Map init Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-map = L.map('map',{zoomControl:false,attributionControl:false}).setView([-38.487,145.620],10);
-L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{maxZoom:20}).addTo(map);
-
-const vesselIcon = L.divIcon({className:'',html:'<div class="vessel-glow" style="font-size:26px;color:#00d4ff;line-height:1;">&#x25B2;</div>',iconSize:[26,26],iconAnchor:[13,13]});
-const crewIcon   = L.divIcon({className:'',html:'<div style="width:14px;height:14px;border-radius:50%;background:#00ff9f;border:2px solid #fff;box-shadow:0 0 8px #00ff9f;cursor:move;" title="CREW - Drag to reposition"></div>',iconSize:[14,14],iconAnchor:[7,7]});
-
-pyxisMarker = L.marker([0,0],{icon:vesselIcon,draggable:true}).addTo(map);
-pyxisMarker.on('dragend',async function(e){ const {lat,lng}=e.target.getLatLng(); try{ const r=await fetch('/set_vessel_pos',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Basic '+btoa('admin:manta')},body:JSON.stringify({lat,lon:lng})}); const d=await r.json(); if(d.snapped){pyxisMarker.setLatLng([d.lat,d.lon]);} }catch(ex){} });
-watchMarker = L.marker([0,0],{icon:crewIcon,draggable:true}).addTo(map);
-watchMarker.on('dragend',async function(e){ const {lat,lng}=e.target.getLatLng(); try{ const r=await fetch('/set_crew_pos',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Basic '+btoa('admin:manta')},body:JSON.stringify({lat,lon:lng})}); const d=await r.json(); if(d.snapped){watchMarker.setLatLng([d.lat,d.lon]);} }catch(ex){} });
-function armAudio(){
-  const ctx=new (window.AudioContext||window.webkitAudioContext)();
-  const buf=ctx.createBuffer(1,1,22050);
-  const src=ctx.createBufferSource(); src.buffer=buf; src.connect(ctx.destination); src.start(0);
-  autoPlayArmed=true;
-  // Reset queue state on arm so stale pre-arm history never replays
-  playedIds=new Set(); audioQueue=[]; isPlaying=false;
-  document.getElementById('arm-btn').style.display='none';
-  document.getElementById('armed-badge').style.display='block';
-}
-
-async function clearAudio(){
-  if(!confirm('Delete all audio reports from server?')) return;
-  try{
-    await fetch('/clear_audio',{method:'POST',headers:{'Authorization':'Basic '+btoa('admin:manta')}});
-    // Also reset local queue
-    audioQueue=[]; playedIds=new Set(); isPlaying=false;
-    document.getElementById('mainAudio').pause();
-    document.getElementById('now-playing-type').innerText='STANDBY';
-    document.getElementById('now-playing-text').innerText='Audio history cleared';
-    document.getElementById('inbox-list').innerHTML='<div style="color:var(--dim);font-size:11px;text-align:center;padding:8px;">Cleared Ã¢Å“â€œ</div>';
-  }catch(e){alert('Clear failed: '+e);}
-}
-
-function playNextInQueue(){
-  if(isPlaying||audioQueue.length===0) return;
-  isPlaying=true;
-  // Always play from queue head (already sorted: urgent/newest first)
-  const item=audioQueue.shift();
-  const a=document.getElementById('mainAudio');
-  a.src='/audio?id='+item.id+'&bust='+Date.now();
-  a.load();
-  a.play().then(()=>{
-    const typeLabel=(item.type||'status').toUpperCase();
-    const urgentTypes=['MAYDAY','SYSTEM_STATUS','KINETIC_THREAT'];
-    const colour=urgentTypes.includes(typeLabel)?'#ff4757':'#00d4ff';
-    document.getElementById('now-playing-type').innerText=typeLabel;
-    document.getElementById('now-playing-type').style.color=colour;
-    document.getElementById('now-playing-text').innerText=item.text?item.text.substring(0,120)+'...':'';
-  }).catch(e=>{isPlaying=false;setTimeout(playNextInQueue,500);});
-  a.onended=()=>{isPlaying=false;setTimeout(playNextInQueue,500);};
-}
-
-// Ã¢â€â‚¬Ã¢â€â‚¬ Main polling tick Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-async function tick(){
-  try{
-    const r=await fetch('/status_api?bust='+Date.now()), d=await r.json();
-    lastLat=d.lat||lastLat; lastLon=d.lon||lastLon;
-
-    pyxisMarker.setLatLng([lastLat,lastLon]);
-    document.getElementById('h-pos').innerText=lastLat.toFixed(4)+', '+lastLon.toFixed(4);
-    document.getElementById('h-sog').innerText=(d.sog!=null?(+d.sog).toFixed(1)+' kn':'--');
-    document.getElementById('h-hdg').innerText=(d.heading!=null?Math.round(d.heading)+'Ã‚Â°':'--');
-
-    const wLat=d.CREW_LAT||0, wLon=d.CREW_LON||0;
-    if(wLat!==0){ watchMarker.setLatLng([wLat,wLon]); }
-
-    if(!isInit&&(lastLat!==0||wLat!==0)){
-      const grp=wLat!==0?L.featureGroup([pyxisMarker,watchMarker]):L.featureGroup([pyxisMarker]);
-      try{map.fitBounds(grp.getBounds().pad(0.4),{maxZoom:13});}catch(e){}
-      isInit=true;
-    }
-
-    // Auto-play queue Ã¢â‚¬â€ newest-first, fresh reports only
-    if(d.audio_history&&autoPlayArmed){
-      const URGENT=['MAYDAY','KINETIC_THREAT','SYSTEM_STATUS'];
-      const MAX_AGE_S=600; // Only auto-play reports < 10 minutes old
-      const nowSec=Date.now()/1000;
-      // Sort: urgent first, then newest ts first
-      const sorted=[...d.audio_history].sort((a,b)=>{
-        const aUr=URGENT.includes((a.type||'').toUpperCase())?1:0;
-        const bUr=URGENT.includes((b.type||'').toUpperCase())?1:0;
-        if(bUr!==aUr) return bUr-aUr;
-        return (b.ts||0)-(a.ts||0);
-      });
-      // Mark stale items as seen (inbox only) Ã¢â‚¬â€ never auto-play old reports
-      sorted.forEach(h=>{
-        if((nowSec-(h.ts||0))>MAX_AGE_S) playedIds.add(h.id);
-      });
-      // Collect fresh unplayed items only
-      const newItems=sorted.filter(h=>h.ready!==false&&!playedIds.has(h.id));
-      newItems.forEach(h=>playedIds.add(h.id));
-      if(newItems.length>0){
-        // Atomically prepend batch Ã¢â‚¬â€ preserves newest-first order
-        audioQueue.splice(0,0,...newItems);
-        // Interrupt non-urgent playback if urgent report just arrived
-        const hasUrgent=newItems.some(h=>URGENT.includes((h.type||'').toUpperCase()));
-        if(hasUrgent&&isPlaying){
-          const curType=(document.getElementById('now-playing-type').innerText||'');
-          if(!URGENT.includes(curType)){
-            document.getElementById('mainAudio').pause();
-            isPlaying=false;
-          }
-        }
-      }
-      playNextInQueue();
-    }
-
-  }catch(e){console.error(e);}
-}
-
-// Ã¢â€â‚¬Ã¢â€â‚¬ CMEMS polling Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-async function tickCmems(){
-  try{
-    const r=await fetch('/sea_state_json'), d=await r.json();
-    document.getElementById('c-wave').innerText=d.wave_h&&d.wave_h!='n/a'?d.wave_h:'--';
-    document.getElementById('c-swell').innerText=d.swell_h&&d.swell_h!='n/a'?d.swell_h:'--';
-    document.getElementById('c-curr').innerText=d.curr_v&&d.curr_v!='n/a'?d.curr_v:'--';
-    document.getElementById('c-sst').innerText=d.sst_c&&d.sst_c!='n/a'?d.sst_c:'--';
-    const badge=document.getElementById('cmems-badge');
-    if(d.cmems_stale||d.wave_h==='n/a'){badge.className='badge-stale';badge.innerText='UPDATING';}
-    else{badge.className='badge-live';badge.innerText='LIVE';}
-  }catch(e){}
-}
-
-// Ã¢â€â‚¬Ã¢â€â‚¬ Health strip Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-async function tickHealth(){
-  try{
-    const r=await fetch('/health'), d=await r.json();
-    const map2={cmems:'pill-cmems',meteo:'pill-meteo',weather_alerts:'pill-alerts',bathymetry:'pill-depth'};
-    for(const [key,pid] of Object.entries(map2)){
-      const el=document.getElementById(pid); if(!el) continue;
-      const w=d[key];
-      el.className='pill '+((!w||!w.ok)?'offline':(w.age_min!=null&&w.age_min>90?'stale':'ok'));
-    }
-  }catch(e){}
-}
-
-// Ã¢â€â‚¬Ã¢â€â‚¬ Inbox panel Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-async function tickInbox(){
-  try{
-    const r=await fetch('/inbox_sync'), data=await r.json();
-    const msgs=data.messages||[];
-    if(msgs.length===0){document.getElementById('inbox-list').innerHTML='<div style="color:var(--dim);font-size:11px;text-align:center;padding:8px;">No messages yet</div>';return;}
-    const srcClass=s=>s==='PYXIS'?'src-pyxis':s==='CMEMS'?'src-cmems':'src-other';
-    // Use /status_api audio_history for full text of system messages
-    document.getElementById('inbox-list').innerHTML=msgs.slice().reverse().map(m=>{
-      const src=(m.id||'').length<15?'PYXIS':'SYS';
-      const lines=(m.lines||[]).join(' ').trim()||m.title||'';
-      return `<div class="inbox-item"><span class="inbox-source ${srcClass(m.title&&m.title.includes('CMEMS')?'CMEMS':'PYXIS')}">${m.title&&m.title.includes('CMEMS')?'CMEMS':'PYXIS'}</span><div class="inbox-msg">${lines.substring(0,160)}</div></div>`;
-    }).join('');
-  }catch(e){}
-}
-
-setInterval(tick,3000); tick();
-setInterval(tickCmems,15000); tickCmems();
-setInterval(tickHealth,30000); tickHealth();
-setInterval(tickInbox,10000); tickInbox();
-</script>
-</body>
-</html>
-"""
+    global last_known_lat, last_known_lon
+    return render_template('player_lite.html', lat=last_known_lat, lon=last_known_lon)
 
 _="""    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -3481,733 +3196,8 @@ def player():
     Dark glassmorphism tactical dashboard with tabbed side panel:
     AUDIO (auto-play player) | SCENARIO (location injector) | INTEL (AIS/CMEMS) | COMMS (voice/commands)
     """
-    return """<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8"/>
-<title>PYXIS TACTICAL</title>
-<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<link rel="preconnect" href="https://fonts.googleapis.com"/>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&family=Roboto+Mono:wght@400;600&display=swap" rel="stylesheet"/>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<style>
-:root{--bg:#050d1a;--glass:rgba(8,20,45,0.82);--border:rgba(0,212,255,0.18);--cyan:#00d4ff;--green:#00ff9f;--amber:#ffb300;--red:#ff4757;--text:#c8e6ff;--dim:#4a7a9b;}
-*{box-sizing:border-box;margin:0;padding:0;}
-html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;}
-#layout{display:flex;height:100vh;width:100vw;}
-#map-panel{flex:1;position:relative;min-width:0;}
-#map{width:100%;height:100%;}
-#side{width:360px;flex-shrink:0;background:var(--glass);border-left:1px solid var(--border);backdrop-filter:blur(20px);display:flex;flex-direction:column;overflow:hidden;}
-/* Tabs */
-.tabs{display:flex;flex-shrink:0;border-bottom:1px solid var(--border);}
-.tab{flex:1;padding:10px 0;text-align:center;font-size:10px;letter-spacing:1.5px;font-family:'Roboto Mono',monospace;color:var(--dim);cursor:pointer;transition:all .2s;border-bottom:2px solid transparent;}
-.tab.active{color:var(--cyan);border-bottom:2px solid var(--cyan);}
-.tab:hover:not(.active){color:var(--text);}
-/* Tab panels */
-.panel{display:none;flex:1;overflow-y:auto;padding:12px;flex-direction:column;gap:10px;}
-.panel.active{display:flex;}
-/* Cards / sections */
-.card{background:rgba(0,0,0,0.25);border:1px solid var(--border);border-radius:10px;padding:10px;}
-.card-title{font-size:9px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:8px;font-family:'Roboto Mono',monospace;}
-/* Audio player */
-#player-main{background:rgba(0,212,255,0.06);border:1px solid rgba(0,212,255,0.25);border-radius:10px;padding:12px;}
-#arm-btn-v{width:100%;padding:10px;background:linear-gradient(135deg,var(--amber),#ff6b00);color:#000;border:none;border-radius:8px;font-weight:700;font-size:12px;cursor:pointer;letter-spacing:1px;animation:pulse 2s infinite;margin-bottom:8px;}
-@keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(255,179,0,0.4);}50%{box-shadow:0 0 0 10px rgba(255,179,0,0);}}
-#armed-badge-v{display:none;background:rgba(0,255,159,0.12);border:1px solid var(--green);border-radius:6px;padding:5px 10px;font-size:10px;color:var(--green);font-family:'Roboto Mono',monospace;letter-spacing:1px;text-align:center;margin-bottom:8px;}
-#now-type{font-size:9px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;}
-#now-text{font-size:11px;color:var(--text);line-height:1.4;margin:3px 0 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-audio#mainAudio{width:100%;height:30px;accent-color:var(--cyan);}
-.audio-item{display:flex;align-items:flex-start;gap:8px;padding:6px 0;border-bottom:1px solid rgba(0,212,255,0.07);}
-.audio-item:last-child{border-bottom:none;}
-.a-type{flex-shrink:0;font-size:9px;font-family:'Roboto Mono',monospace;padding:2px 5px;border-radius:3px;background:rgba(0,212,255,0.1);color:var(--cyan);border:1px solid rgba(0,212,255,0.2);}
-.a-txt{font-size:10px;color:var(--text);line-height:1.4;flex:1;min-width:0;}
-.play-btn2{flex-shrink:0;background:rgba(0,212,255,0.12);color:var(--cyan);border:1px solid rgba(0,212,255,0.3);border-radius:5px;padding:3px 8px;font-size:9px;cursor:pointer;font-family:'Roboto Mono',monospace;}
-.play-btn2:hover{background:rgba(0,212,255,0.25);}
-/* Scenario */
-select,input[type=text],input[type=number]{background:rgba(0,0,0,0.4);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:7px 10px;width:100%;font-family:'Roboto Mono',monospace;font-size:11px;outline:none;}
-select:focus,input:focus{border-color:var(--cyan);}
-.fields-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
-.field-lbl{font-size:9px;letter-spacing:1px;color:var(--dim);margin-bottom:3px;font-family:'Roboto Mono',monospace;}
-.btn-inject{width:100%;padding:10px;background:linear-gradient(135deg,#00d4ff,#006aff);color:#000;border:none;border-radius:8px;font-weight:700;font-size:12px;cursor:pointer;letter-spacing:1px;margin-top:4px;transition:opacity .2s;}
-.btn-inject:hover{opacity:.85;}
-.btn-kill{width:100%;padding:8px;background:rgba(255,71,87,0.12);color:var(--red);border:1px solid rgba(255,71,87,0.3);border-radius:8px;font-size:11px;font-weight:600;cursor:pointer;margin-top:6px;transition:all .2s;font-family:'Roboto Mono',monospace;}
-.btn-kill:hover{background:rgba(255,71,87,0.25);}
-.toast{display:none;background:rgba(0,255,159,0.15);border:1px solid var(--green);border-radius:6px;padding:6px 10px;font-size:10px;color:var(--green);text-align:center;font-family:'Roboto Mono',monospace;}
-/* Intel */
-.cmems-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
-.cmems-val{font-size:16px;font-weight:700;color:var(--cyan);font-family:'Roboto Mono',monospace;}
-.contact-row{display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid rgba(0,212,255,0.07);font-size:10px;}
-/* Comms */
-.cmd-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;}
-.cmd-btn{padding:8px 4px;background:rgba(0,212,255,0.08);color:var(--cyan);border:1px solid rgba(0,212,255,0.2);border-radius:7px;font-size:10px;font-weight:600;cursor:pointer;letter-spacing:.5px;transition:all .2s;font-family:'Roboto Mono',monospace;}
-.cmd-btn:hover{background:rgba(0,212,255,0.2);}
-.cmd-btn.danger{background:rgba(255,71,87,0.1);color:var(--red);border-color:rgba(255,71,87,0.3);}
-.cmd-btn.danger:hover{background:rgba(255,71,87,0.25);}
-#mic-btn{width:100%;padding:12px;background:rgba(0,212,255,0.08);color:var(--cyan);border:1px solid rgba(0,212,255,0.25);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Roboto Mono',monospace;}
-#mic-btn.recording{background:rgba(255,71,87,0.2);color:var(--red);border-color:rgba(255,71,87,0.4);animation:pulse 1s infinite;}
-#chat-log{font-size:10px;max-height:100px;overflow-y:auto;}
-.chat-line-user{color:var(--amber);margin:2px 0;}
-.chat-line-ai{color:var(--green);margin:2px 0;}
-/* Map overlays */
-#hud-map-pos{position:absolute;top:10px;left:10px;z-index:10;background:var(--glass);border:1px solid var(--border);border-radius:8px;padding:7px 12px;backdrop-filter:blur(12px);font-family:'Roboto Mono',monospace;font-size:11px;}
-</style>
-</head>
-<body>
-<div id="layout">
-  <div id="map-panel">
-    <div id="map"></div>
-    <div id="hud-map-pos">
-      <span id="mp-sog" style="color:var(--cyan);font-weight:600;">-- kn</span>
-      &nbsp;&nbsp;<span id="mp-hdg" style="color:var(--dim);">HDG --</span>
-      &nbsp;&nbsp;<span id="mp-pos" style="color:var(--dim);font-size:10px;">--</span>
-    </div>
-  </div>
-
-  <div id="side">
-    <!-- Tab bar -->
-    <div class="tabs" style="flex-wrap:wrap;">
-      <div class="tab active" onclick="switchTab('audio')" style="flex:1 0 25%;">AUDIO</div>
-      <div class="tab" onclick="switchTab('scenario')" style="flex:1 0 25%;">SCENARIO</div>
-      <div class="tab" onclick="switchTab('engine')" style="flex:1 0 25%;">ENGINE</div>
-      <div class="tab" onclick="switchTab('env')" style="flex:1 0 25%;">ENV</div>
-      <div class="tab" onclick="switchTab('intel')" style="flex:1 0 25%;">INTEL</div>
-      <div class="tab" onclick="switchTab('comms')" style="flex:1 0 25%;">COMMS</div>
-      <div class="tab" onclick="switchTab('air')" style="flex:1 0 25%;color:#a78bfa;">AIR</div>
-    </div>
-
-    <!-- AUDIO TAB -->
-    <div class="panel active" id="tab-audio">
-      <div id="player-main">
-        <button id="arm-btn-v" onclick="armAudio()">&#x26A1; TAP TO ARM AUTO-PLAY</button>
-        <div id="armed-badge-v">&#x25B6; AUTO-PLAY ARMED &mdash; LIVE MONITORING</div>
-        <div id="now-type">STANDBY</div>
-        <div id="now-text">No briefing playing</div>
-        <audio id="mainAudio" controls></audio>
-      </div>
-      <div class="card">
-        <div class="card-title">Recent briefings</div>
-        <div id="audio-list"><div style="color:var(--dim);font-size:10px;">Loading...</div></div>
-      </div>
-    </div>
-
-    <!-- SCENARIO TAB -->
-    <div class="panel" id="tab-scenario">
-      <div class="card">
-        <div class="card-title">Location Preset</div>
-        <select id="preset-select" onchange="applyPreset()">
-          <option value="">-- SELECT --</option>
-          <optgroup label="AUST/NZ PORTS">
-            <option value="-38.487,145.620">Yaringa Boat Harbour</option>
-            <option value="-38.452,145.237">Cowes Jetty</option>
-            <option value="-33.85,151.27">Sydney Harbour</option>
-            <option value="-12.46,130.82">Darwin Harbour</option>
-            <option value="-32.05,115.73">Fremantle</option>
-            <option value="-20.3,118.57">Port Hedland</option>
-            <option value="-18.28,147.69">Great Barrier Reef</option>
-            <option value="-39.5,145.0">Bass Strait</option>
-            <option value="-42.88,147.32">Hobart</option>
-            <option value="-14.0,139.0">Gulf of Carpentaria</option>
-            <option value="-33.5,130.0">Great Australian Bight</option>
-            <option value="-36.8,174.7">Auckland</option>
-            <option value="-41.2,174.5">Cook Strait</option>
-          </optgroup>
-          <optgroup label="GLOBAL CHOKEPOINTS">
-            <option value="26.56,56.26">Strait of Hormuz</option>
-            <option value="12.58,43.33">Bab el-Mandeb</option>
-            <option value="29.92,32.55">Suez Canal</option>
-            <option value="9.12,-79.73">Panama Canal</option>
-            <option value="1.25,103.83">Strait of Malacca</option>
-            <option value="35.97,-5.5">Strait of Gibraltar</option>
-            <option value="41.0,29.0">Bosphorus Strait</option>
-            <option value="24.5,119.5">Taiwan Strait</option>
-            <option value="50.0,1.0">English Channel</option>
-            <option value="55.7,12.8">Oresund</option>
-            <option value="-53.28,-73.34">Strait of Magellan</option>
-          </optgroup>
-          <optgroup label="HIGH RISK / WAR ZONES">
-            <option value="44.5,33.5">Black Sea</option>
-            <option value="13.0,47.0">Gulf of Aden</option>
-            <option value="10.0,114.0">South China Sea</option>
-            <option value="33.5,34.0">Eastern Mediterranean</option>
-            <option value="46.0,36.5">Sea of Azov</option>
-            <option value="3.0,5.0">Gulf of Guinea</option>
-            <option value="37.0,124.0">Yellow Sea</option>
-            <option value="15.0,65.0">Arabian Sea</option>
-            <option value="5.0,50.0">Somali Basin</option>
-          </optgroup>
-          <optgroup label="HAZARDS & EXTREME WEATHER">
-            <option value="-56.5,-67.2">Cape Horn</option>
-            <option value="-34.8,19.9">Cape of Good Hope</option>
-            <option value="45.5,-5.0">Bay of Biscay</option>
-            <option value="58.0,-175.0">Bering Sea</option>
-            <option value="-45.0,90.0">Southern Ocean</option>
-            <option value="57.0,-145.0">Gulf of Alaska</option>
-            <option value="55.0,3.0">North Sea</option>
-            <option value="58.0,-55.0">Labrador Sea</option>
-            <option value="28.0,-65.0">Sargasso Sea</option>
-            <option value="-40.0,155.0">Tasman Sea</option>
-          </optgroup>
-          <optgroup label="MAJOR WATERWAYS">
-            <option value="25.0,-90.0">Gulf of Mexico</option>
-            <option value="15.0,-75.0">Caribbean Sea</option>
-            <option value="57.0,19.0">Baltic Sea</option>
-            <option value="43.0,15.0">Adriatic Sea</option>
-            <option value="10.0,95.0">Andaman Sea</option>
-            <option value="-15.0,150.0">Coral Sea</option>
-            <option value="65.0,5.0">Norwegian Sea</option>
-            <option value="15.0,130.0">Philippine Sea</option>
-          </optgroup>
-          <option value="custom">Custom Coordinates</option>
-        </select>
-      </div>
-      <div class="card">
-        <div class="card-title">Vessel Position</div>
-        <div class="fields-row">
-          <div><div class="field-lbl">LAT</div><input type="text" id="sc-lat" placeholder="-38.487"/></div>
-          <div><div class="field-lbl">LON</div><input type="text" id="sc-lon" placeholder="145.620"/></div>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-title">Scenario Parameters</div>
-        <div class="fields-row">
-          <div><div class="field-lbl">WIND (kn)</div><input type="number" id="sc-wind" placeholder="15"/></div>
-          <div><div class="field-lbl">HDG (&deg;)</div><input type="number" id="sc-hdg" placeholder="270"/></div>
-          <div><div class="field-lbl">SOG (kn)</div><input type="number" id="sc-sog" placeholder="8"/></div>
-          <div><div class="field-lbl">CONDITION</div>
-            <select id="sc-cond"><option value="calm">Calm</option><option value="choppy">Choppy</option><option value="rough">Rough</option><option value="storm">Storm</option></select>
-          </div>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-title">Current Injected Scenario</div>
-        <div id="current-scenario" style="font-size:10px;color:var(--text);font-family:'Roboto Mono',monospace;line-height:1.6;">Loading...</div>
-      </div>
-      <button class="btn-inject" onclick="injectScenario()">&#x26A1; INJECT SCENARIO</button>
-      <div class="toast" id="inject-toast">&#x2714; SCENARIO INJECTED</div>
-      <button class="btn-kill" onclick="killSim()">&#x26A0; STOP SIMULATOR</button>
-    </div>
-
-    <!-- ENGINE TAB -->
-    <div class="panel" id="tab-engine">
-      <div class="card">
-        <div class="card-title">Propulsion</div>
-        <div class="fields-row">
-          <div><div class="field-lbl">RPM</div><input type="number" id="sc-rpm" value="1200"/></div>
-          <div><div class="field-lbl">FUEL %</div><input type="number" id="sc-fuel" value="95"/></div>
-        </div>
-        <div style="display:flex;gap:6px;margin-top:6px;">
-          <button class="cmd-btn" onclick="document.getElementById('sc-rpm').value=0;document.getElementById('sc-sog').value=8;injectScenario()" style="flex:1;">UNDER SAIL</button>
-          <button class="cmd-btn" onclick="document.getElementById('sc-rpm').value=2200;document.getElementById('sc-sog').value=16;injectScenario()" style="flex:1;">UNDER MOTOR</button>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-title">Power Systems</div>
-        <div class="fields-row">
-          <div><div class="field-lbl">BATTERY (V)</div><input type="number" id="sc-bat" value="13.5" step="0.1"/></div>
-        </div>
-      </div>
-      <button class="btn-inject" onclick="injectScenario()">&#x26A1; INJECT STATE</button>
-    </div>
-
-    <!-- ENV TAB -->
-    <div class="panel" id="tab-env">
-      <div class="card">
-        <div class="card-title">Environment Sensors</div>
-        <div class="fields-row">
-          <div><div class="field-lbl">DEPTH (m)</div><input type="number" id="sc-depth" value="45"/></div>
-          <div><div class="field-lbl">EXT TEMP (&deg;C)</div><input type="number" id="sc-out-temp" value="22.5"/></div>
-          <div><div class="field-lbl">ROLL (&deg;)</div><input type="number" id="sc-roll" value="0"/></div>
-        </div>
-      </div>
-      <button class="btn-inject" onclick="injectScenario()">&#x26A1; INJECT STATE</button>
-    </div>
-
-    <!-- INTEL TAB -->
-    <div class="panel" id="tab-intel">
-      <div class="card">
-        <div class="card-title">CMEMS Ocean Data <span id="cmems-badge2" style="margin-left:6px;font-size:9px;padding:1px 5px;border-radius:3px;background:rgba(255,179,0,0.15);color:var(--amber);border:1px solid var(--amber);">UPDATING</span></div>
-        <div class="cmems-grid">
-          <div><div class="field-lbl">Wave H</div><div class="cmems-val" id="i-wave">--</div></div>
-          <div><div class="field-lbl">Swell H</div><div class="cmems-val" id="i-swell">--</div></div>
-          <div><div class="field-lbl">Current</div><div class="cmems-val" id="i-curr">--</div></div>
-          <div><div class="field-lbl">SST</div><div class="cmems-val" id="i-sst">--</div></div>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-title">AIS Vessel DB
-          <select id="ais-sel" onchange="aisSelect()" style="margin-top:6px;font-size:10px;">
-            <option value="">-- SELECT VESSEL --</option>
-          </select>
-        </div>
-        <div id="ais-detail" style="display:none;font-size:10px;margin-top:8px;line-height:1.6;color:var(--text);"></div>
-        <button class="cmd-btn" onclick="aisTrack()" style="margin-top:6px;width:100%;">TRACK ON MAP</button>
-      </div>
-      <div class="card">
-        <div class="card-title">Radar Contacts</div>
-        <div id="contact-list" style="font-size:10px;color:var(--dim);">Scanning...</div>
-      </div>
-      <div class="card">
-        <div class="card-title">Sea State Map <button onclick="changeZ(-1)" style="background:none;border:1px solid var(--border);color:var(--dim);padding:1px 5px;border-radius:3px;cursor:pointer;font-size:10px;">-</button> <span id="sz-lbl">4</span> <button onclick="changeZ(1)" style="background:none;border:1px solid var(--border);color:var(--dim);padding:1px 5px;border-radius:3px;cursor:pointer;font-size:10px;">+</button></div>
-        <img id="wave-img" style="width:100%;border-radius:6px;border:1px solid var(--border);margin-top:4px;" src="/wave_map?w=320&h=180&z=4"/>
-      </div>
-      <div class="card">
-        <div class="card-title">AIS Traffic Map <button onclick="changeAZ(-1)" style="background:none;border:1px solid var(--border);color:var(--dim);padding:1px 5px;border-radius:3px;cursor:pointer;font-size:10px;">-</button> <span id="az-lbl">4</span> <button onclick="changeAZ(1)" style="background:none;border:1px solid var(--border);color:var(--dim);padding:1px 5px;border-radius:3px;cursor:pointer;font-size:10px;">+</button></div>
-        <img id="ais-img" style="width:100%;border-radius:6px;border:1px solid var(--border);margin-top:4px;" src="/ais_map?w=320&h=180&z=4"/>
-      </div>
-    </div>
-
-    <!-- COMMS TAB -->
-    <div class="panel" id="tab-comms">
-      <div class="card">
-        <div class="card-title">Voice Command</div>
-        <button id="mic-btn" onmousedown="startRec()" onmouseup="stopRec()" ontouchstart="startRec()" ontouchend="stopRec()">&#x1F3A4; HOLD TO SPEAK</button>
-        <div id="chat-log" style="margin-top:8px;"></div>
-      </div>
-      <div class="card">
-        <div class="card-title">Course Override</div>
-        <input type="text" id="dest-in" placeholder="Enter destination or coordinates..."/>
-        <div style="display:flex;gap:6px;margin-top:6px;">
-          <button class="cmd-btn" onclick="setDest()" style="flex:1;">SET COURSE</button>
-          <button class="cmd-btn" onclick="clearRoute()" style="flex:0 0 70px;background:rgba(255,71,87,0.1);color:var(--red);border-color:rgba(255,71,87,0.3);">CLEAR</button>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-title">Quick Commands</div>
-        <div class="cmd-grid">
-          <button class="cmd-btn danger" onclick="reqG('MAYDAY')">&#x1F6A8; MAYDAY</button>
-          <button class="cmd-btn" onclick="reqG('DAY_BRIEF')">&#x2600; DAY BRIEF</button>
-          <button class="cmd-btn" onclick="reqG('NIGHT_BRIEF')">&#x1F319; NIGHT BRIEF</button>
-          <button class="cmd-btn" onclick="reqG('WEATHER_SITREP')">&#x26C8; WEATHER</button>
-          <button class="cmd-btn" onclick="reqRoute('ANCHORAGE')">&#x2693; ANCHORAGE</button>
-          <button class="cmd-btn" onclick="reqRoute('PORT')">&#x1F6A2; PORTS</button>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-title">Systems</div>
-        <div class="cmd-grid">
-          <button class="cmd-btn" onclick="sysCmd('sys_gen_start')">GEN START</button>
-          <button class="cmd-btn" onclick="sysCmd('sys_gen_stop')">GEN STOP</button>
-          <button class="cmd-btn" onclick="sysCmd('sys_bilge_auto')">BILGE PUMP</button>
-          <button class="cmd-btn" onclick="reqG('ENGAGE_RADAR')">RADAR ON</button>
-          <button class="cmd-btn" onclick="reqG('DISENGAGE_RADAR')">RADAR OFF</button>
-          <button class="cmd-btn" onclick="reqG('ENGAGE_SONAR')">SONAR ON</button>
-        </div>
-      </div>
-    </div>
-  </div>
-</div>
-
-<script>
-// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Globals Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-let map, vesselMarker, watchMarker, trackPoly, routePoly;
-let lastLat=-38.487, lastLon=145.620;
-let showTrack=true, trackedMmsi=null;
-let autoPlayArmed=false, playedIds=new Set(), audioQueue=[], isPlaying=false;
-let waveZ=4, aisZ=4;
-let mediaRec, audioChunks=[], isRec=false;
-let aisDb={}, aisMarkers={};
-
-
-// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Tab switching Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-function switchTab(name){
-  document.querySelectorAll('.tab').forEach((t,i)=>{t.classList.remove('active');});
-  document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
-  document.querySelector('.tab[onclick*="'+name+'"]').classList.add('active');
-  document.getElementById('tab-'+name).classList.add('active');
-}
-
-function initMap(){
-  map=L.map('map',{zoomControl:false,attributionControl:false,doubleClickZoom:false});
-  map.setView([lastLat,lastLon],11);
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{maxZoom:20}).addTo(map);
-  const vi=L.divIcon({className:'',html:'<div style="font-size:26px;color:#00d4ff;filter:drop-shadow(0 0 5px #00d4ff);line-height:1;">&#x25B2;</div>',iconSize:[26,26],iconAnchor:[13,13]});
-  const wi=L.divIcon({className:'',html:'<div style="width:13px;height:13px;border-radius:50%;background:#00ff9f;border:2px solid #fff;box-shadow:0 0 8px #00ff9f;"></div>',iconSize:[13,13],iconAnchor:[6,6]});
-  vesselMarker=L.marker([lastLat,lastLon],{icon:vi}).addTo(map);
-  watchMarker=L.marker([0,0],{icon:wi}).addTo(map);
-  trackPoly=L.polyline([],{color:'#00d4ff',weight:1.5,opacity:0.5}).addTo(map);
-}
-initMap();
-
-function armAudio(){
-  const ctx=new(window.AudioContext||window.webkitAudioContext)();
-  const b=ctx.createBuffer(1,1,22050); const s=ctx.createBufferSource(); s.buffer=b; s.connect(ctx.destination); s.start(0);
-  autoPlayArmed=true;
-  document.getElementById('arm-btn-v').style.display='none';
-  document.getElementById('armed-badge-v').style.display='block';
-}
-function playNextInQueue(){
-  if(isPlaying||audioQueue.length===0) return;
-  isPlaying=true;
-  const item=audioQueue.shift();
-  const a=document.getElementById('mainAudio');
-  a.src='/audio?id='+item.id+'&bust='+Date.now(); a.load();
-  a.play().then(()=>{
-    const lbl=(item.type||'status').toUpperCase().replace('_',' ');
-    const URGENT=['MAYDAY','SYSTEM STATUS','KINETIC THREAT'];
-    document.getElementById('now-type').style.color=URGENT.includes(lbl)?'#ff4757':'#00d4ff';
-    document.getElementById('now-type').innerText=lbl;
-    document.getElementById('now-text').innerText=item.text?item.text.substring(0,120)+'...':'';
-  }).catch(e=>{isPlaying=false;setTimeout(playNextInQueue,500);});
-  a.onended=()=>{isPlaying=false;setTimeout(playNextInQueue,500);};
-}
-
-let isInit=false;
-async function tick(){
-  try{
-    const d=await(await fetch('/status_api?bust='+Date.now())).json();
-    lastLat=d.lat||lastLat; lastLon=d.lon||lastLon;
-    vesselMarker.setLatLng([lastLat,lastLon]);
-    document.getElementById('mp-pos').innerText=lastLat.toFixed(4)+','+lastLon.toFixed(4);
-    document.getElementById('mp-sog').innerText=(d.sog!=null?(+d.sog).toFixed(1)+' kn':'-- kn');
-    document.getElementById('mp-hdg').innerText='HDG '+(d.heading!=null?Math.round(d.heading)+'&deg;':'--');
-    const wL=d.CREW_LAT||0; if(wL) watchMarker.setLatLng([wL,d.CREW_LON||0]);
-    if(!isInit&&lastLat!==0){
-      const grp=wL?L.featureGroup([vesselMarker,watchMarker]):L.featureGroup([vesselMarker]);
-      try{map.fitBounds(grp.getBounds().pad(0.3),{maxZoom:13});}catch(e){}
-      isInit=true;
-    }
-    // Auto-play queue Ã¢â‚¬â€ newest-first, fresh reports only
-    if(d.audio_history&&autoPlayArmed){
-      const URGENT=['MAYDAY','KINETIC_THREAT','SYSTEM_STATUS'];
-      const MAX_AGE_S=600; const nowSec=Date.now()/1000;
-      const sorted=[...d.audio_history].sort((a,b)=>{
-        const aUr=URGENT.includes((a.type||'').toUpperCase())?1:0;
-        const bUr=URGENT.includes((b.type||'').toUpperCase())?1:0;
-        if(bUr!==aUr) return bUr-aUr;
-        return (b.ts||0)-(a.ts||0);
-      });
-      sorted.forEach(h=>{ if((nowSec-(h.ts||0))>MAX_AGE_S) playedIds.add(h.id); });
-      const newItems=sorted.filter(h=>h.ready!==false&&!playedIds.has(h.id));
-      newItems.forEach(h=>playedIds.add(h.id));
-      if(newItems.length>0){
-        audioQueue.splice(0,0,...newItems);
-        const hasUrgent=newItems.some(h=>URGENT.includes((h.type||'').toUpperCase()));
-        if(hasUrgent&&isPlaying){
-          const curType=(document.getElementById('now-type').innerText||'').replace(' ','_');
-          if(!URGENT.includes(curType)){document.getElementById('mainAudio').pause();isPlaying=false;}
-        }
-      }
-      playNextInQueue();
-    }
-    // Audio history list
-    if(d.audio_history){
-      const rev=[...d.audio_history].reverse();
-      document.getElementById('audio-list').innerHTML=rev.map(h=>{
-        const typeLabel=(h.type||'sys').toUpperCase().replace('_',' ');
-        const txt=h.text?h.text.substring(0,80)+'...':'';
-        const btn=h.ready===false?'<span style="color:var(--amber);font-size:9px;">GENERATING...</span>':
-          '<button class="play-btn2" onclick="manualPlay('+h.id+')">&#x25B6; PLAY</button>';
-        return '<div class="audio-item"><span class="a-type">'+typeLabel+'</span><div class="a-txt">'+txt+'</div>'+btn+'</div>';
-      }).join('');
-    }
-    // Contacts
-    if(d.radar_contacts){
-      updateAisMarkers(d.radar_contacts);
-      populateAis(d.radar_contacts);
-      document.getElementById('contact-list').innerHTML=d.radar_contacts.slice(0,8).map(c=>
-        '<div class="contact-row"><span style="color:var(--cyan);">'+(c.name||'Unknown')+'</span><span style="color:var(--dim);">'+(c.range_nm!=null?c.range_nm.toFixed(1)+' nm':'')+'</span></div>'
-      ).join('')||'<span style="color:var(--dim);">No contacts</span>';
-    }
-    // Current scenario
-    try{const sc=await(await fetch('/scenario')).json();
-      document.getElementById('current-scenario').innerHTML=
-        Object.entries(sc).filter(([k])=>k!=='id').map(([k,v])=>'<div><span style="color:var(--dim);">'+k+':</span> <span style="color:var(--cyan);">'+v+'</span></div>').join('')||'No active scenario';
-    }catch(e){}
-  }catch(e){console.error(e);}
-}
-
-// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ AIS map markers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-// AIS type -> color + symbol map (mirrors classify_vessel Python output)
-const _AIS_COL = {
-  'Cargo':'#c8c8c8','Tanker':'#ff8200','Passenger':'#5080ff','Military':'#ff3c3c',
-  'Law Enforcement':'#6464ff','Fishing':'#00c850','Sailing':'#ffffff','Pleasure Craft':'#00dcdc',
-  'SAR':'#ff3c3c','Pilot':'#00c8ff','Tug':'#ffb300','Medical':'#ffffff','Fire Fighting':'#ff5000',
-  'WIG':'#00c8b4','High Speed':'#00c8ff','Unknown':'#a0a0a0','Other':'#a0a0a0'
-};
-const _AIS_SYM = {
-  'Military':'&#9670;','Law Enforcement':'&#9670;','SAR':'&#43;','Medical':'&#43;',
-  'Fire Fighting':'&#43;','Tanker':'&#9650;','Passenger':'&#9650;','Cargo':'&#9650;',
-  'Sailing':'&#9651;'
-};
-function _makeAisIcon(c){
-  const vt = c.vessel_type || c.type || 'Unknown';
-  const col = _AIS_COL[vt] || '#a0a0a0';
-  const sym = _AIS_SYM[vt] || '&#9679;';
-  const pulse = (vt==='Military'||vt==='Law Enforcement'||vt==='SAR') ?
-    'animation:aisPulse 1.4s ease-in-out infinite;' : 'animation:aisPulse 2.5s ease-in-out infinite;';
-  return L.divIcon({className:'',
-    html:'<div style="width:12px;height:12px;border-radius:50%;background:'+col+
-         ';border:1.5px solid '+col+';box-shadow:0 0 6px '+col+
-         ';display:flex;align-items:center;justify-content:center;font-size:7px;color:#000;font-weight:bold;'+pulse+'">'+(sym==='&#9679;'?'':sym)+'</div>',
-    iconSize:[12,12],iconAnchor:[6,6]});
-}
-function updateAisMarkers(contacts){
-  const seen=new Set();
-  (contacts||[]).forEach(c=>{
-    if(!c.lat||!c.lon) return;
-    const key=String(c.mmsi||c.name||(c.lat+','+c.lon));
-    seen.add(key);
-    const icon=_makeAisIcon(c);
-    if(aisMarkers[key]){
-      aisMarkers[key].setLatLng([c.lat,c.lon]);
-      aisMarkers[key].setIcon(icon);
-    } else {
-      const vt=c.vessel_type||c.type||'Unknown';
-      const col=_AIS_COL[vt]||'#a0a0a0';
-      const m=L.marker([c.lat,c.lon],{icon:icon}).addTo(map);
-      m.bindPopup('<div style="font-family:monospace;font-size:11px;background:#050d1a;color:#c8e6ff;padding:6px 8px;border-radius:4px;">'
-        +'<b style="color:'+col+'">'+(c.name||'Unknown')+'</b><br>'
-        +'<span style="font-size:9px;color:'+col+';background:rgba(0,0,0,0.4);padding:1px 4px;border-radius:2px;">'+vt+'</span><br>'
-        +(c.mmsi?'MMSI: '+c.mmsi+'<br>':'')
-        +(c.speed!=null?'SOG: '+c.speed+' kn<br>':'')
-        +(c.destination?'&#x2192; '+c.destination+'<br>':'')
-        +(c.range_nm?'Range: '+c.range_nm.toFixed(1)+' nm':'')
-        +'</div>');
-      aisMarkers[key]=m;
-    }
-  });
-  Object.keys(aisMarkers).forEach(k=>{if(!seen.has(k)){aisMarkers[k].remove();delete aisMarkers[k];}});
-}
-
-// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ ADS-B tick Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-let adsbMarkers={};
-async function tickAdsb(){
-  try{
-    const d=await(await fetch('/adsb_contacts')).json();
-    const contacts=d.contacts||[];
-    const age=d.cache_age_s||0;
-    // Update badge
-    const b=document.getElementById('adsb-badge');
-    if(b){
-      b.innerText=contacts.length+' AIRCRAFT'+(age>120?' (STALE)':'');
-      b.style.color=age>120?'var(--amber)':'var(--green)';
-    }
-    // Update list
-    const el=document.getElementById('adsb-list');
-    if(!el) return;
-    if(contacts.length===0){el.innerHTML='<div style="color:var(--dim);font-size:10px;text-align:center;padding:12px;">No aircraft in range</div>';return;}
-    el.innerHTML=contacts.map(c=>{
-      const pri=c.priority||'ROUTINE';
-      const isCrit=pri==='CRITICAL'; const isWatch=pri==='WATCH';
-      const col=isCrit?'var(--red)':isWatch?'var(--amber)':'var(--text)';
-      const bg=isCrit?'rgba(255,71,87,0.12)':isWatch?'rgba(255,179,0,0.08)':'rgba(0,0,0,0.2)';
-      const bdr=isCrit?'rgba(255,71,87,0.5)':isWatch?'rgba(255,179,0,0.4)':'var(--border)';
-      const badge=(isCrit||isWatch||c.squawk)?`<span style="color:${col};font-size:8px;font-weight:bold;background:rgba(255,179,0,0.1);border:1px solid ${col};padding:1px 4px;border-radius:2px;margin-left:3px;">SQK ${c.squawk||'----'} ${pri!=='ROUTINE'?pri:''}</span>`:'';
-      const eta=c.eta_min?`<span style="color:var(--red);font-size:8px;"> ETA ${c.eta_min}min</span>`:'';
-      return `<div style="background:${bg};border:1px solid ${bdr};border-radius:7px;padding:7px 9px;margin-bottom:5px;">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">
-          <span style="color:${col};font-family:'Roboto Mono',monospace;font-weight:bold;font-size:12px;">&#x2708; ${c.callsign||c.icao||'????'}</span>${badge}${eta}
-          <span style="color:var(--dim);font-size:9px;">${c.country||''}</span>
-        </div>
-        <div style="font-size:9px;color:#888;margin-bottom:2px;">${c.type||'Unknown'}</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:2px;font-size:9px;font-family:'Roboto Mono',monospace;color:var(--dim);">
-          <span>FL${Math.round((c.alt_ft||0)/100)}</span>
-          <span>${c.spd_kts!=null?Math.round(c.spd_kts)+'kts':'-kts'} ${c.track!=null?Math.round(c.track)+'&deg;':''}</span>
-          <span style="color:var(--cyan);">${c.range_nm!=null?c.range_nm+'nm':'--'} @${c.bearing!=null?Math.round(c.bearing)+'&deg;':'--'}</span>
-        </div>
-      </div>`;
-    }).join('');
-    // ADS-B aircraft on map
-    const seen=new Set();
-    const acIcon=L.divIcon({className:'',html:'<div style="font-size:11px;color:#fff;background:rgba(20,0,60,0.88);border:1.5px solid #a78bfa;border-radius:3px;width:20px;height:20px;line-height:18px;text-align:center;box-shadow:0 1px 4px rgba(0,0,0,0.9);">&#x2708;</div>',iconSize:[20,20],iconAnchor:[10,10]});
-    contacts.slice(0,30).forEach(c=>{
-      if(!c.lat||!c.lon||c.on_ground) return;
-      const key=c.icao||c.callsign;
-      seen.add(key);
-      if(adsbMarkers[key]){
-        adsbMarkers[key].setLatLng([c.lat,c.lon]);
-        adsbMarkers[key].setPopupContent(`<div style="font-family:monospace;font-size:11px;background:#050d1a;color:#c8e6ff;padding:8px 10px;border-radius:6px;min-width:160px;"><b style="color:#a78bfa;font-size:13px;">&#x2708; ${c.callsign||c.icao||'???'}</b><br><span style="font-size:9px;color:#aaa;">${c.type||'Unknown'} &bull; ${c.country||''}</span><br><hr style="border-color:rgba(255,255,255,0.1);margin:4px 0;">FL${Math.round((c.alt_ft||0)/100)} &bull; ${c.spd_kts!=null?Math.round(c.spd_kts)+'kts':'?kts'} ${c.track!=null?Math.round(c.track)+'&deg;':''}<br>Range: ${c.range_nm||'?'}nm @ ${c.bearing!=null?Math.round(c.bearing):'?'}&deg;${c.squawk?'<br>Squawk: <b>'+c.squawk+'</b>':''}${c.closing_rate_kts>2?'<br><span style="color:#ff5555;">&#x21D3; Closing '+Math.round(c.closing_rate_kts)+'kts'+( c.eta_min?' ETA '+c.eta_min+'min':'')+'</span>':''}</div>`);
-      } else {
-        const m=L.marker([c.lat,c.lon],{icon:acIcon}).addTo(map);
-        m.bindPopup(`<div style="font-family:monospace;font-size:11px;background:#050d1a;color:#c8e6ff;padding:8px 10px;border-radius:6px;min-width:160px;"><b style="color:#a78bfa;font-size:13px;">&#x2708; ${c.callsign||c.icao||'???'}</b><br><span style="font-size:9px;color:#aaa;">${c.type||'Unknown'} &bull; ${c.country||''}</span><br><hr style="border-color:rgba(255,255,255,0.1);margin:4px 0;">FL${Math.round((c.alt_ft||0)/100)} &bull; ${c.spd_kts!=null?Math.round(c.spd_kts)+'kts':'?kts'} ${c.track!=null?Math.round(c.track)+'&deg;':''}<br>Range: ${c.range_nm||'?'}nm @ ${c.bearing!=null?Math.round(c.bearing):'?'}&deg;${c.squawk?'<br>Squawk: <b>'+c.squawk+'</b>':''}${c.closing_rate_kts>2?'<br><span style="color:#ff5555;">&#x21D3; Closing '+Math.round(c.closing_rate_kts)+'kts'+( c.eta_min?' ETA '+c.eta_min+'min':'')+'</span>':''}</div>`);
-        adsbMarkers[key]=m;
-      }
-    });
-    Object.keys(adsbMarkers).forEach(k=>{if(!seen.has(k)){adsbMarkers[k].remove();delete adsbMarkers[k];}});
-  }catch(e){}
-}
-
-// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ CMEMS tick Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-async function tickCmems(){
-  try{
-    const d=await(await fetch('/sea_state_json')).json();
-    const f=v=>v&&v!='n/a'?v:'--';
-    document.getElementById('i-wave').innerText=f(d.wave_h);
-    document.getElementById('i-swell').innerText=f(d.swell_h);
-    document.getElementById('i-curr').innerText=f(d.curr_v);
-    document.getElementById('i-sst').innerText=f(d.sst_c);
-    const b=document.getElementById('cmems-badge2');
-    if(d.cmems_stale||d.wave_h==='n/a'){b.style.background='rgba(255,179,0,0.15)';b.style.color='var(--amber)';b.style.borderColor='var(--amber)';b.innerText='UPDATING';}
-    else{b.style.background='rgba(0,255,159,0.12)';b.style.color='var(--green)';b.style.borderColor='var(--green)';b.innerText='LIVE';}
-  }catch(e){}
-}
-
-// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Track history Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-async function tickTrack(){
-  try{const h=await(await fetch('/history_api')).json(); trackPoly.setLatLngs(h);}catch(e){}
-}
-
-// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Maps refresh Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-function refreshMaps(){
-  const b=Date.now();
-  document.getElementById('wave-img').src='/wave_map?w=320&h=180&z='+waveZ+'&lat='+lastLat+'&lon='+lastLon+'&bust='+b;
-  document.getElementById('ais-img').src='/ais_map?w=320&h=180&z='+aisZ+'&lat='+lastLat+'&lon='+lastLon+'&bust='+b;
-}
-function changeZ(d){waveZ=Math.max(1,Math.min(9,waveZ+d));document.getElementById('sz-lbl').innerText=waveZ;refreshMaps();}
-function changeAZ(d){aisZ=Math.max(1,Math.min(9,aisZ+d));document.getElementById('az-lbl').innerText=aisZ;refreshMaps();}
-
-// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ AIS Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-function populateAis(contacts){
-  aisDb={};
-  const sel=document.getElementById('ais-sel');
-  const prev=sel.value;
-  sel.innerHTML='<option value="">-- SELECT VESSEL --</option>';
-  contacts.filter(c=>c.mmsi||c.name).forEach(c=>{
-    const k=c.mmsi||c.id||c.name;
-    aisDb[k]=c;
-    const o=document.createElement('option'); o.value=k;
-    const r=c.range_nm?' | '+c.range_nm.toFixed(1)+'nm':'';
-    o.text=(c.name||'Unknown')+r;
-    sel.appendChild(o);
-  });
-  if(prev&&aisDb[prev]) sel.value=prev;
-}
-function aisSelect(){
-  const k=document.getElementById('ais-sel').value;
-  const box=document.getElementById('ais-detail');
-  if(!k||!aisDb[k]){box.style.display='none';return;}
-  const c=aisDb[k]; box.style.display='block';
-  box.innerHTML=[
-    '<b style="color:var(--cyan);">'+(c.name||'Unknown')+'</b>',
-    c.mmsi?'<div><span style="color:var(--dim);">MMSI:</span> '+c.mmsi+'</div>':'',
-    c.destination?'<div><span style="color:var(--dim);">Dest:</span> <span style="color:var(--amber);">'+c.destination+'</span></div>':'',
-    c.speed!=null?'<div><span style="color:var(--dim);">Speed:</span> '+c.speed+' kn</div>':'',
-    c.range_nm?'<div><span style="color:var(--dim);">Range:</span> '+c.range_nm.toFixed(2)+' nm</div>':''
-  ].join('');
-}
-function aisTrack(){
-  const k=document.getElementById('ais-sel').value;
-  if(!k||!aisDb[k]) return;
-  const c=aisDb[k]; if(c.lat&&c.lon){trackedMmsi=k;map.panTo([c.lat,c.lon]);map.setZoom(12);}
-}
-
-// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Scenario Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-function applyPreset(){
-  const v=document.getElementById('preset-select').value;
-  if(!v||v==='custom') return;
-  const [lat,lon]=v.split(',');
-  document.getElementById('sc-lat').value=lat;
-  document.getElementById('sc-lon').value=lon;
-}
-async function injectScenario(){
-  const latR = parseFloat(document.getElementById('sc-lat').value)||lastLat;
-  const lonR = parseFloat(document.getElementById('sc-lon').value)||lastLon;
-  const wR = parseFloat(document.getElementById('sc-wind').value)||15;
-  const hdgR = parseFloat(document.getElementById('sc-hdg').value)||270;
-  const sogR = parseFloat(document.getElementById('sc-sog').value)||8;
-  const rpmR = parseFloat(document.getElementById('sc-rpm')?document.getElementById('sc-rpm').value:1200);
-  const fuelR = parseFloat(document.getElementById('sc-fuel')?document.getElementById('sc-fuel').value:95);
-  const batR = parseFloat(document.getElementById('sc-bat')?document.getElementById('sc-bat').value:13.5);
-  const depthR = parseFloat(document.getElementById('sc-depth')?document.getElementById('sc-depth').value:45);
-  const outT = parseFloat(document.getElementById('sc-out-temp')?document.getElementById('sc-out-temp').value:22.5);
-  const rollR = parseFloat(document.getElementById('sc-roll')?document.getElementById('sc-roll').value:0);
-
-  const payload={ lat:latR, lon:lonR, wind_kn:wR, heading:hdgR, sog:sogR, condition:document.getElementById('sc-cond').value||'calm' };
-  const headless_payload = { 
-     base_lat:latR, base_lon:lonR, aws_kts:wR, cog_deg:hdgR, sog_kts:sogR,
-     rpm:isNaN(rpmR)?1200:rpmR, fuel_pct:isNaN(fuelR)?95:fuelR, bat_v:isNaN(batR)?13.5:batR, depth_m:isNaN(depthR)?45:depthR, out_temp_c:isNaN(outT)?22.5:outT, roll_deg:isNaN(rollR)?0:rollR
-  };
-  try{
-    await fetch('/update_scenario',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-    await fetch('/api/sim_override',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(headless_payload)});
-    const t=document.getElementById('inject-toast'); t.style.display='block';
-    setTimeout(()=>t.style.display='none',2500);
-  }catch(e){alert('Inject failed: '+e);}
-}
-async function killSim(){
-  if(!confirm('Stop the headless simulator? The physical watch will resume control.')) return;
-  await fetch('/kill_sim',{method:'POST'});
-}
-
-// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Manual audio play Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-function manualPlay(id){
-  const a=document.getElementById('mainAudio');
-  a.src='/audio?id='+id+'&bust='+Date.now(); a.load(); a.play().catch(e=>{});
-  isPlaying=false;
-}
-
-// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Voice recording Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-async function startRec(){
-  if(isRec) return; isRec=true;
-  const btn=document.getElementById('mic-btn');
-  btn.classList.add('recording'); btn.innerText='Ã°Å¸â€Â´ RECORDING...';
-  try{
-    const stream=await navigator.mediaDevices.getUserMedia({audio:true});
-    mediaRec=new MediaRecorder(stream,{mimeType:'audio/webm'});
-    audioChunks=[];
-    mediaRec.ondataavailable=e=>audioChunks.push(e.data);
-    mediaRec.onstop=()=>{sendVoice();audioChunks=[];isRec=false;};
-    mediaRec.start();
-  }catch(e){isRec=false;btn.classList.remove('recording');btn.innerText='Ã°Å¸Å½Â¤ HOLD TO SPEAK';}
-}
-function stopRec(){
-  if(mediaRec&&mediaRec.state==='recording'){mediaRec.stop();mediaRec.stream.getTracks().forEach(t=>t.stop());}
-  document.getElementById('mic-btn').classList.remove('recording');
-  document.getElementById('mic-btn').innerText='Ã°Å¸Å½Â¤ HOLD TO SPEAK';
-}
-async function sendVoice(){
-  const blob=new Blob(audioChunks,{type:'audio/webm'});
-  const fd=new FormData(); fd.append('audio',blob,'voice.webm'); fd.append('lat',lastLat); fd.append('lon',lastLon);
-  try{
-    const j=await(await fetch('/voice_input',{method:'POST',body:fd})).json();
-    const log=document.getElementById('chat-log');
-    if(j.user_query){const d=document.createElement('div');d.className='chat-line-user';d.innerText='> '+j.user_query;log.prepend(d);}
-    if(j.response){const d=document.createElement('div');d.className='chat-line-ai';d.innerText='< '+j.response;log.prepend(d);}
-  }catch(e){}
-}
-
-// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Nav commands Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-async function setDest(){
-  const v=document.getElementById('dest-in').value; if(!v) return;
-  await fetch('/set_destination',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({destination:v,lat:lastLat,lon:lastLon})});
-  document.getElementById('dest-in').value='ROUTING...';
-  setTimeout(()=>document.getElementById('dest-in').value='',2000);
-}
-async function clearRoute(){await fetch('/set_destination',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({destination:'CLEAR',lat:lastLat,lon:lastLon})});}
-async function reqG(msg){await fetch('/gemini',{method:'POST',headers:{'Content-Type':'application/json','X-Garmin-Auth':'PYXIS_ACTUAL_77X'},body:JSON.stringify({prompt:msg,lat:lastLat,lon:lastLon})});}
-async function reqRoute(t){await fetch('/gemini',{method:'POST',headers:{'Content-Type':'application/json','X-Garmin-Auth':'PYXIS_ACTUAL_77X'},body:JSON.stringify({prompt:'PULL_NAV_DATA:'+t,lat:lastLat,lon:lastLon})});}
-async function sysCmd(c){await fetch('/gemini',{method:'POST',headers:{'Content-Type':'application/json','X-Garmin-Auth':'PYXIS_ACTUAL_77X'},body:JSON.stringify({prompt:'SYSTEM_CMD:'+c,lat:lastLat,lon:lastLon})});}
-
-// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Poll loops Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-setInterval(tick,3000); tick();
-setInterval(tickCmems,15000); tickCmems();
-setInterval(tickTrack,10000); tickTrack();
-setInterval(refreshMaps,30000); refreshMaps();
-setInterval(tickAdsb,20000); tickAdsb();
-</script>
-
-<!-- AIR TAB PANEL (must be inside #side, injected before </body> via JS) -->
-<template id="tpl-air">
-  <div class="panel" id="tab-air">
-    <div class="card" style="flex-shrink:0;">
-      <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;">
-        <span>ADS-B AIRSPACE</span>
-        <span id="adsb-badge" style="font-family:'Roboto Mono',monospace;font-size:9px;color:var(--green);">LOADING...</span>
-      </div>
-      <div style="font-size:9px;color:var(--dim);margin-bottom:6px;">OpenSky Network Ã¢â‚¬Â¢ 200nm radius Ã¢â‚¬Â¢ 20s refresh</div>
-    </div>
-    <div id="adsb-list" style="flex:1;overflow-y:auto;"><div style="color:var(--dim);font-size:10px;text-align:center;padding:16px;">Loading aircraft...</div></div>
-  </div>
-</template>
-<script>
-// Inject AIR panel from template into #side
-const airTpl=document.getElementById('tpl-air');
-if(airTpl){document.getElementById('side').appendChild(document.importNode(airTpl.content,true));}
-</script>
-</body>
-</html>
-"""
+    global last_known_lat, last_known_lon
+    return render_template('player.html', lat=last_known_lat, lon=last_known_lon)
 
 _="""
 <!DOCTYPE html>
@@ -4905,18 +3895,18 @@ def gem_trig():
         
         if msg.startswith("SET_DESTINATION:"):
             target = msg.split(":")[1]
-            calculate_destination(target, la, lo)
+            requests.post("https://127.0.0.1:443/set_destination", json={"destination": target, "lat": la, "lon": lo}, verify=False)
             return jsonify({"watch_summary": "RTE CALC...", "status": "queued"}), 200
 
         if msg.startswith("REQ_ROUTE:"):
             target = msg.split(":")[1]
             if target == "ANCHORAGE":
-                 r = calculate_anchorage(la, lo)
-                 dests = r.get("destinations", ["Unknown"])
+                 r = requests.post("https://127.0.0.1:443/find_anchorage", json={"lat": la, "lon": lo}, verify=False)
+                 dests = r.json().get("destinations", ["Unknown"]) if r.status_code == 200 else ["Timeout"]
                  return jsonify({"watch_summary": "SELECT TGT", "destinations": dests}), 200
             elif target == "PORT":
-                 r = calculate_ports(la, lo)
-                 dests = r.get("destinations", ["Unknown"])
+                 r = requests.post("https://127.0.0.1:443/find_ports", json={"lat": la, "lon": lo}, verify=False)
+                 dests = r.json().get("destinations", ["Unknown"]) if r.status_code == 200 else ["Timeout"]
                  return jsonify({"watch_summary": "SELECT TGT", "destinations": dests}), 200
         if msg.startswith("VIEW_NAV:"):
             task_id = str(uuid.uuid4())
@@ -5900,7 +4890,7 @@ THREAT: [NONE/LOW/MEDIUM/HIGH — tactical threat assessment reason, max 100 cha
             cmd_payload = msg.split(":")[1]
             try:
                 # Tell the simulator about the new UUV target or command
-                sim_in_logic({"UUV_STATE": cmd_payload})
+                requests.post("https://127.0.0.1:443/sim_ingress", json={"UUV_STATE": cmd_payload}, verify=False)
             except: pass
             return jsonify({"watch_summary": "CMD SENT", "status": "queued"}), 200
 
@@ -5924,8 +4914,8 @@ THREAT: [NONE/LOW/MEDIUM/HIGH — tactical threat assessment reason, max 100 cha
                             except: pass
                             
                     if not use_cache:
-                        res, status_code = calculate_intel_feed({"lat": la, "lon": lo})
-                        alerts = res.get("alerts", []) if status_code == 200 else []
+                        r = requests.post("https://127.0.0.1:443/intel_feed", json={"lat": la, "lon": lo}, verify=False)
+                        alerts = r.json().get("alerts", []) if r.status_code == 200 else []
                         try:
                             with open(cache_file, "w") as f: json.dump({"alerts": alerts}, f)
                         except: pass
@@ -6064,7 +5054,7 @@ THREAT: [NONE/LOW/MEDIUM/HIGH — tactical threat assessment reason, max 100 cha
             task_results[task_id] = [txt]
             
             try:
-                calculate_destination(f"{c_lat},{c_lon}", la, lo)
+                requests.post("https://127.0.0.1:443/set_destination", json={"destination": f"{c_lat},{c_lon}", "lat": la, "lon": lo}, verify=False)
             except Exception as e: log(f"MOB Route Err: {e}")
             
             try:
@@ -6195,155 +5185,14 @@ def nmea_listener_thread():
 @app.route('/lite')
 @requires_auth
 def lite():
-    return """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>PYXIS C2 - LITE</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <style>
-        body { background: #000; color: #0f0; font-family: monospace; padding: 20px; font-size: 16px; margin: 0; }
-        .row { display: flex; flex-direction: column; gap: 15px; margin-bottom: 20px; }
-        .stat { border: 1px solid #0f0; padding: 15px; background: rgba(0, 40, 0, 0.2); }
-        .val { font-size: 1.2em; font-weight: bold; color: #fff; margin-top: 5px; }
-        .contacts { font-size: 12px; margin-top: 10px; color: #8f8; }
-        button { background: #0f0; color: #000; border: none; padding: 20px; font-weight: bold; font-size: 16px; width: 100%; transition: 0.1s; border-radius: 4px; }
-        button:active { background: #fff; transform: scale(0.98); }
-        input { background: #000; color: #0f0; border: 1px solid #0f0; padding: 15px; width: 100%; box-sizing: border-box; font-family: monospace; font-size: 16px; margin-bottom: 15px; }
-        audio { display: none; }
-    </style>
-</head>
-<body>
-    <div style="text-align:center; margin-bottom: 20px;">
-        <h2 style="margin:0;">PYXIS LITE COMMAND</h2>
-        <div id="connection" style="color:#0f0;">CONNECTING...</div>
-    </div>
-    
-    <div class="row">
-        <div class="stat">GPS FIX <div class="val" id="loc">AWAITING...</div></div>
-        <div class="stat">ENVIRONMENT <div class="val" id="wea">AWAITING...</div></div>
-        <div class="stat">SONAR CONTACTS <div class="contacts" id="rad">AWAITING...</div></div>
-    </div>
-    
-    <input type="text" id="dest" placeholder="Enter override course..." />
-    <button onclick="setDest()">SUBMIT OVERRIDE</button>
-    <button style="margin-top: 15px; background:#f00; color:#fff;" onclick="sos()">TRANSMIT MAYDAY</button>
-    <button style="margin-top: 15px; background:#00f; color:#fff;" onclick="window.location.href='/lite_messages'">VIEW MESSAGES</button>
-    
-    <audio id="audio" type="audio/mpeg"></audio>
-    <script>
-        let curStatId = 0, lastLat = 0, lastLon = 0, isArmed = false;
-        
-        document.body.onclick = function() {
-            if(!isArmed) { isArmed = true; document.getElementById('audio').play().catch(e=>{}); }
-        };
-        
-        async function setDest() {
-            let trg = document.getElementById('dest').value;
-            if(!trg) return;
-            try { await fetch('/set_destination', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({destination: trg, lat: lastLat, lon: lastLon})}); } catch(e){}
-            document.getElementById('dest').value = "ROUTING...";
-            setTimeout(() => document.getElementById('dest').value = "", 2000);
-        }
-        
-        async function sos() {
-            try { await fetch('/gemini', {method: 'POST', headers: {'Content-Type': 'application/json', 'X-Garmin-Auth': 'PYXIS_ACTUAL_77X'}, body: JSON.stringify({prompt: 'MAYDAY'})}); } catch(e){}
-        }
-
-        async function up() {
-            try {
-                const r = await fetch('/status_api'), d = await r.json();
-                lastLat = d.lat; lastLon = d.lon;
-                document.getElementById('connection').innerText = "LINK ESTABLISHED";
-                document.getElementById('loc').innerText = d.lat.toFixed(5) + ', ' + d.lon.toFixed(5);
-                document.getElementById('wea').innerText = d.weather || "NOMINAL SWELL";
-                
-                let rText = "";
-                if(d.radar_contacts && d.radar_contacts.length > 0) {
-                    d.radar_contacts.forEach(c => {
-                        rText += c.name + " [" + c.range_nm.toFixed(1) + "nm]<br>";
-                    });
-                } else { rText = "CLEAR SEA"; }
-                document.getElementById('rad').innerHTML = rText;
-                
-                let newStat = d.status_id || 0;
-                let newSys = d.systems_id || 0;
-                
-                if((newStat != curStatId && newStat != 0) || (newSys != curStatId && newSys != 0)) {
-                    curStatId = newStat > newSys ? newStat : newSys;
-                    if(isArmed) {
-                        let a = document.getElementById('audio');
-                        a.src = '/audio?t=' + Date.now();
-                        a.load();
-                        setTimeout(() => a.play(), 1000);
-                    }
-                }
-            } catch(e) { document.getElementById('connection').innerText = "LINK LOST"; document.getElementById('connection').style.color = "#f00"; }
-        }
-        setInterval(up, 3000);
-    </script>
-</body>
-</html>
-"""
+    global last_known_lat, last_known_lon
+    return render_template('lite.html', lat=last_known_lat, lon=last_known_lon)
 
 @app.route('/lite_messages')
 @requires_auth
 def lite_messages():
-    return """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Vessel Pyxis Incoming Messages</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <style>
-        body { background: #000; color: #0f0; font-family: monospace; padding: 15px; margin: 0; }
-        h2 { text-align: center; color: #fff; margin-top: 5px; margin-bottom: 20px; text-transform: uppercase; font-size: 20px; border-bottom: 2px solid #0f0; padding-bottom: 10px; }
-        .msg { border: 1px solid #0f0; padding: 15px; margin-bottom: 15px; background: rgba(0, 40, 0, 0.4); border-radius: 5px; box-shadow: 0 0 10px rgba(0,255,0,0.1); word-wrap: break-word; }
-        .type { font-weight: bold; color: #0f0; font-size: 1.1em; border-bottom: 1px dashed #0a0; padding-bottom: 5px; margin-bottom: 10px; text-transform: uppercase;}
-        .text { font-size: 15px; line-height: 1.5; color: #cfc; white-space: pre-wrap; }
-        .tools { display: flex; justify-content: space-between; margin-top: 20px; margin-bottom: 40px; }
-        button { background: #0f0; color: #000; border: none; padding: 15px; font-weight: bold; font-size: 16px; width: 48%; border-radius: 4px; }
-        button:active { background: #fff; transform: scale(0.98); }
-    </style>
-</head>
-<body>
-    <h2>Vessel Pyxis incoming messages</h2>
-    <div id="msgContainer">Loading...</div>
-    <div class="tools">
-        <button onclick="window.location.href='/lite'">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ BACK</button>
-        <button onclick="fetchMsgs()">REFRESH</button>
-    </div>
-    <script>
-        async function fetchMsgs() {
-            try {
-                const res = await fetch('/status_api');
-                const d = await res.json();
-                const container = document.getElementById('msgContainer');
-                container.innerHTML = '';
-                
-                if (d.audio_history && d.audio_history.length > 0) {
-                    const rev = [...d.audio_history].reverse();
-                    rev.forEach(m => {
-                        if (m.text && m.text.trim() !== "") {
-                            const div = document.createElement('div');
-                            div.className = 'msg';
-                            div.innerHTML = `<div class="type">[${m.type || 'SYS'}]</div><div class="text">${m.text.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</div>`;
-                            container.appendChild(div);
-                        }
-                    });
-                } else {
-                    container.innerHTML = '<div class="msg" style="text-align:center;">NO NEW MESSAGES</div>';
-                }
-            } catch (e) {
-                document.getElementById('msgContainer').innerHTML = '<div class="msg" style="color:#f00; border-color:#f00;">CONNECTION ERROR</div>';
-            }
-        }
-        fetchMsgs();
-        setInterval(fetchMsgs, 10000);
-    </script>
-</body>
-</html>
-"""
+    global last_known_lat, last_known_lon
+    return render_template('lite_messages.html', lat=last_known_lat, lon=last_known_lon)
 
 @app.route('/web_inbox_sync', methods=['POST'])
 def web_inbox_sync():
@@ -7931,187 +6780,8 @@ def weather_map(z_param=None, cb=None):
 @requires_auth
 def scenario_injector():
     """Web UI for injecting scenarios into the headless simulator."""
-    return """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>PYXIS SCENARIO COMMAND</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <style>
-        body { background: #000; color: #0f0; font-family: monospace; display: flex; flex-direction: column; height: 100vh; margin: 0; }
-        #map { flex: 0.55; border-bottom: 2px solid #0f0; }
-        .ui { flex: 0.45; padding: 15px; overflow-y: auto; background: #010; }
-        .row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
-        button { background: #040; color: #0f0; border: 1px solid #0f0; padding: 12px; font-weight: bold; cursor: pointer; border-radius: 4px; }
-        button:active { background: #0f0; color: #000; }
-        input[type="range"] { flex: 1; margin: 0 15px; }
-        select { background: #000; color: #0f0; border: 1px solid #0f0; padding: 10px; font-family: monospace; width: 100%; transition: background 0.2s;}
-        select:focus { background: #030; outline: none; }
-        optgroup { background: #000; color: #888; font-style: normal; font-weight: bold; }
-        option { color: #0f0; padding: 5px; }
-        .info { color: #0a0; font-size: 13px; margin-bottom: 10px; display: block; }
-    </style>
-</head>
-<body>
-    <div id="map"></div>
-    <div class="ui">
-        <div class="row" style="color:#0f0; font-weight:bold; font-size: 18px; border-bottom: 1px dashed #0a0; padding-bottom: 10px;">GLOBAL SCENARIO COMMAND</div>
-        
-        <span class="info">Select a real-world testing location to automatically warp the Pyxis Simulator. Navigational hazards (OpenSeaMap) will populate organically upon arrival.</span>
-
-        <div class="row">
-            <select id="geoPresets" onchange="warpToSelected()">
-                <option value="-37.84,144.91" disabled selected>SELECT A GLOBAL WARP ZONE...</option>
-                <optgroup label="Australian Waters">
-                    <option value="-37.84,144.91">Melbourne (Port Phillip Bay)</option>
-                    <option value="-38.277,144.731">Popes Eye (Port Phillip) [START]</option>
-                    <option value="-38.356,144.773">Blairgowrie Marina</option>
-                    <option value="-38.486,145.022">West Head (Westernport Bay)</option>
-                    <option value="-39.11,146.47">Wilsons Promontory</option>
-                    <option value="-33.85,151.26">Sydney Harbour (Heads)</option>
-                    <option value="-16.82,146.12">Great Barrier Reef (Cairns)</option>
-                    <option value="-32.06,115.74">Fremantle / Rottnest Island</option>
-                    <option value="-43.14,147.74">Hobart (Storm Bay)</option>
-                </optgroup>
-                <optgroup label="Global Strategic Chokepoints">
-                    <option value="26.56,56.25">Strait of Hormuz</option>
-                    <option value="12.58,43.33">Bab el-Mandeb (Red Sea)</option>
-                    <option value="29.93,32.56">Suez Canal (Gulf of Suez)</option>
-                    <option value="9.14,-79.91">Panama Canal (Caribbean Side)</option>
-                    <option value="1.25,103.83">Singapore Strait</option>
-                    <option value="5.83,95.31">Strait of Malacca</option>
-                    <option value="41.02,29.00">Bosphorus Strait</option>
-                    <option value="35.97,-5.49">Strait of Gibraltar</option>
-                </optgroup>
-                <optgroup label="Hostile & Active Zones">
-                    <option value="44.42,33.58">Black Sea (Crimea Coast)</option>
-                    <option value="15.22,41.97">Red Sea (Houthi Threat Area)</option>
-                    <option value="11.41,43.43">Gulf of Aden (Piracy Zone)</option>
-                    <option value="9.83,115.54">South China Sea (Spratly Islands)</option>
-                    <option value="25.03,121.95">Taiwan Strait</option>
-                    <option value="33.56,34.82">Eastern Mediterranean (Lebanon Coast)</option>
-                </optgroup>
-                <optgroup label="Extreme Climates">
-                    <option value="-56.98,-67.27">Cape Horn (Southern Ocean)</option>
-                    <option value="-60.00,-60.00">Drake Passage</option>
-                    <option value="78.22,15.62">Svalbard (Arctic Circle Sea Ice)</option>
-                    <option value="53.07,-169.54">Bering Sea (Dutch Harbor)</option>
-                    <option value="47.56,-52.12">Grand Banks (Iceberg Alley)</option>
-                </optgroup>
-                <optgroup label="European & American Seas">
-                    <option value="51.01,1.48">English Channel (Dover Strait)</option>
-                    <option value="54.12,6.50">North Sea (Heavy Traffic)</option>
-                    <option value="25.80,-79.80">Florida Straits</option>
-                    <option value="40.45,-73.80">New York Harbor Approaches</option>
-                    <option value="24.45,-89.80">Gulf of Mexico (Oil Rigs)</option>
-                </optgroup>
-            </select>
-        </div>
-
-        <div class="row" style="margin-top: 10px;">
-            <span>TARGET COORDS:</span>
-            <span id="coords" style="color: #fff; font-size: 16px;">-37.8400, 144.9100</span>
-        </div>
-        
-        <div class="row">
-            <span>SEA STATE OVERRIDE:</span>
-            <span id="seaOut" style="color: #fff; font-size: 16px;">1.5m</span>
-        </div>
-        <div class="row" style="margin-bottom: 20px;">
-            <input type="range" id="seaState" min="0" max="6" step="0.5" value="1.5" oninput="document.getElementById('seaOut').innerText=this.value+'m'" />
-        </div>
-        
-        <button style="width:100%; padding:20px; font-size:18px; margin-top:10px;" onclick="deploy()">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ EXECUTE WARP & INJECT ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬</button>
-        <button style="width:100%; padding:15px; font-size:16px; margin-top:10px; background:#005;" onclick="locateWithPyxis()">ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂºÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â  LOCATE WITH PYXIS (SYNC WATCH)</button>
-    </div>
-
-    <script>
-        let map, marker, crewMarker;
-        let lat = -37.8400, lon = 144.9100;
-
-        function initMap() {
-            map = L.map('map', {zoomControl: false}).setView([lat, lon], 12);
-            L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-                maxZoom: 19
-            }).addTo(map);
-            marker = L.marker([lat, lon]).addTo(map);
-            crewMarker = L.circleMarker([0,0], {color: '#00f', radius: 6, fillOpacity: 0.8}).addTo(map);
-
-            map.on('click', function(e) {
-                lat = e.latlng.lat; lon = e.latlng.lng;
-                updateMapPos();
-                document.getElementById('geoPresets').selectedIndex = 0; // reset dropdown
-            });
-            
-            // Fetch live proxy target on load to prevent visual reset
-            fetch('/status_api').then(r=>r.json()).then(d=>{
-                if(d.lat && d.lon) {
-                    lat = parseFloat(d.lat);
-                    lon = parseFloat(d.lon);
-                    marker.setLatLng([lat, lon]);
-                    map.panTo([lat, lon]);
-                    updateMapPos();
-                }
-                if (d.CREW_LAT !== undefined && d.CREW_LON !== undefined && d.CREW_LAT !== 0) {
-                    crewMarker.setLatLng([d.CREW_LAT, d.CREW_LON]);
-                }
-            }).catch(e=>{});
-        }
-        initMap();
-
-        function updateMapPos() {
-            marker.setLatLng([lat, lon]);
-            map.panTo([lat, lon]);
-            document.getElementById('coords').innerText = lat.toFixed(4) + ", " + lon.toFixed(4);
-        }
-
-        function warpToSelected() {
-            let val = document.getElementById('geoPresets').value;
-            if(val) {
-                let parts = val.split(',');
-                lat = parseFloat(parts[0]);
-                lon = parseFloat(parts[1]);
-                updateMapPos();
-                map.setZoom(10);
-            }
-        }
-
-        async function deploy() {
-            let sst = parseFloat(document.getElementById('seaState').value);
-            // No manual threats anymore, they are auto-generated from OSM
-            let payload = { lat: lat, lon: lon, sea_state: sst, threats: [] };
-            try {
-                const res = await fetch('/update_scenario', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-                if(res.ok) {
-                    alert('WARP SUCCESSFUL! NAV HAZARDS WILL POPULATE SHORTLY.');
-                } else {
-                    alert('SERVER REJECTED PAYLOAD!');
-                }
-            } catch(e) { alert("Deployment Error"); }
-        }
-
-        function locateWithPyxis() {
-            fetch('/status_api').then(r=>r.json()).then(d=>{
-                if(d.CREW_LAT !== undefined && d.CREW_LON !== undefined && d.CREW_LAT !== 0) {
-                    lat = parseFloat(d.CREW_LAT);
-                    lon = parseFloat(d.CREW_LON);
-                    updateMapPos();
-                    deploy(); // Auto deploy to the new watch coords
-                } else {
-                    alert('NO PHYSICAL WATCH GPS DATA AVAILABLE YET');
-                }
-            }).catch(e=>{alert("Failed to fetch Watch coordinates.")});
-        }
-    </script>
-</body>
-</html>
-"""
+    global last_known_lat, last_known_lon
+    return render_template('injector.html', lat=last_known_lat, lon=last_known_lon)
 
 # Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ TOPO & NAUTICAL MAP ENDPOINTS Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 # Shared tile-mosaic renderer used by /topo_map and /nautical_map
@@ -8861,167 +7531,12 @@ def tile_cache_coverage():
         return jsonify({"error": str(e)}), 500
 
 
-_TILE_MGR_HTML = """
-<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"/><title>PYXIS TILE CACHE MANAGER</title>
-<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
-<link rel="preconnect" href="https://fonts.googleapis.com"/>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Roboto+Mono:wght@400;600&display=swap" rel="stylesheet"/>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css"/>
-<style>
-:root{--bg:#050d1a;--glass:rgba(8,20,45,0.85);--border:rgba(0,212,255,0.18);--cyan:#00d4ff;--green:#00ff9f;--amber:#ffb300;--red:#ff4757;--violet:#a78bfa;--text:#c8e6ff;--dim:#4a7a9b;}
-*{box-sizing:border-box;margin:0;padding:0;}html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-size:13px;}
-#layout{display:flex;height:100vh;width:100vw;}#map{flex:1;min-width:0;}
-#panel{width:370px;flex-shrink:0;background:var(--glass);border-left:1px solid var(--border);backdrop-filter:blur(18px);display:flex;flex-direction:column;overflow:hidden;}
-#ph{padding:12px 14px 8px;border-bottom:1px solid var(--border);background:rgba(0,0,0,0.35);}
-#ph h1{font-size:11px;font-weight:700;letter-spacing:2.5px;color:var(--cyan);font-family:'Roboto Mono',monospace;}
-#ph .sub{font-size:8px;color:var(--dim);letter-spacing:1px;margin-top:2px;}
-#vpos{display:flex;gap:10px;padding:7px 14px;background:rgba(0,212,255,0.04);border-bottom:1px solid var(--border);font-family:'Roboto Mono',monospace;}
-.vpi{display:flex;flex-direction:column;}.vpl{font-size:7px;letter-spacing:1.5px;color:var(--dim);text-transform:uppercase;}.vpv{font-size:10px;color:var(--cyan);font-weight:600;}
-#pbody{flex:1;overflow-y:auto;padding:10px;display:flex;flex-direction:column;gap:8px;}
-.card{background:rgba(0,0,0,0.28);border:1px solid var(--border);border-radius:8px;padding:9px;}
-.ctitle{font-size:8px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:7px;font-family:'Roboto Mono',monospace;display:flex;justify-content:space-between;align-items:center;}
-.layer-row{display:flex;gap:6px;}
-.lbtn{flex:1;padding:7px 4px;background:rgba(0,0,0,0.3);border:1px solid var(--border);border-radius:6px;cursor:pointer;text-align:center;transition:all .2s;user-select:none;}
-.lbtn.on{border-color:var(--cyan);background:rgba(0,212,255,0.1);}
-.lbtn .li{font-size:17px;display:block;margin-bottom:2px;}
-.lbtn .ln{font-size:9px;letter-spacing:1px;font-family:'Roboto Mono',monospace;color:var(--dim);}.lbtn.on .ln{color:var(--cyan);}
-.lbtn .ls{font-size:7px;color:var(--dim);}
-.zgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;}
-.zbtn{padding:5px 2px;background:rgba(0,0,0,0.3);border:1px solid var(--border);border-radius:5px;cursor:pointer;text-align:center;transition:all .2s;font-family:'Roboto Mono',monospace;user-select:none;}
-.zbtn .zz{font-size:10px;font-weight:700;color:var(--text);}.zbtn .znm{font-size:7px;color:var(--dim);}.zbtn .zt{font-size:7px;color:var(--dim);margin-top:1px;}
-.zbtn.on{border-color:var(--violet);background:rgba(167,139,250,0.12);}.zbtn.on .zz{color:var(--violet);}
-.pgrid{display:grid;grid-template-columns:1fr 1fr;gap:5px;}
-.pbtn{padding:7px 3px;background:rgba(0,0,0,0.3);border:1px solid var(--border);border-radius:6px;cursor:pointer;text-align:center;font-size:9px;font-family:'Roboto Mono',monospace;color:var(--text);transition:all .2s;user-select:none;}
-.pbtn:hover{background:rgba(0,212,255,0.08);border-color:rgba(0,212,255,0.35);}
-.pbtn.on{background:rgba(0,212,255,0.12);border-color:var(--cyan);color:var(--cyan);}
-#draw-btn{width:100%;margin-top:6px;padding:9px;background:rgba(167,139,250,0.08);border:1px solid rgba(167,139,250,0.3);border-radius:7px;color:var(--violet);font-size:10px;font-weight:600;font-family:'Roboto Mono',monospace;cursor:pointer;letter-spacing:1px;transition:all .2s;}
-#draw-btn.on{background:rgba(167,139,250,0.22);border-color:var(--violet);}
-#bbox-info{font-size:8px;font-family:'Roboto Mono',monospace;color:var(--dim);margin-top:5px;line-height:1.7;}
-.sgrid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;}
-.si{text-align:center;padding:6px;background:rgba(0,0,0,0.2);border-radius:5px;}
-.sn{font-size:15px;font-weight:700;font-family:'Roboto Mono',monospace;color:var(--cyan);}
-.sn.warn{color:var(--amber);}.sn.bad{color:var(--red);}
-.sl{font-size:7px;color:var(--dim);letter-spacing:1px;margin-top:1px;}
-#dl-btn{width:100%;padding:11px;background:linear-gradient(135deg,rgba(0,212,255,0.18),rgba(0,90,255,0.18));border:1px solid var(--cyan);border-radius:8px;color:var(--cyan);font-size:12px;font-weight:700;font-family:'Roboto Mono',monospace;cursor:pointer;letter-spacing:2px;transition:all .2s;}
-#dl-btn:hover:not(:disabled){background:linear-gradient(135deg,rgba(0,212,255,0.32),rgba(0,90,255,0.32));}
-#dl-btn:disabled{opacity:0.38;cursor:not-allowed;}
-#pw{display:none;}.pbb{background:rgba(0,0,0,0.3);border-radius:4px;height:5px;overflow:hidden;margin:5px 0;}
-.pb{height:5px;border-radius:4px;background:linear-gradient(90deg,var(--cyan),#0055ff);transition:width .5s;width:0%;}
-.ptxt{display:flex;justify-content:space-between;font-size:8px;font-family:'Roboto Mono',monospace;color:var(--dim);}
-#log{font-size:8px;font-family:'Roboto Mono',monospace;color:var(--dim);max-height:90px;overflow-y:auto;}
-.ll{padding:2px 0;border-bottom:1px solid rgba(0,212,255,0.05);}.ll.ok{color:var(--green);}.ll.err{color:var(--red);}.ll.info{color:var(--cyan);}
-#cov-btn{width:100%;padding:8px;background:rgba(0,255,159,0.08);border:1px solid rgba(0,255,159,0.3);border-radius:7px;color:var(--green);font-size:9px;font-weight:600;font-family:'Roboto Mono',monospace;cursor:pointer;letter-spacing:1px;transition:all .2s;margin-top:6px;}
-#cov-btn.on{background:rgba(0,255,159,0.2);border-color:var(--green);}
-.leg{display:flex;gap:6px;margin-top:5px;flex-wrap:wrap;}
-.leg-i{display:flex;align-items:center;gap:3px;font-size:7px;font-family:'Roboto Mono',monospace;color:var(--dim);}
-.leg-sq{width:9px;height:9px;border-radius:2px;}
-</style></head><body>
-<div id="layout"><div id="map"></div>
-<div id="panel">
-<div id="ph"><h1>PYXIS TILE CACHE MANAGER</h1><div class="sub">PRE-CACHE NAUTICAL &amp; TOPOGRAPHIC CHARTS FOR OFFLINE USE</div></div>
-<div id="vpos">
-<div class="vpi"><div class="vpl">VESSEL LAT</div><div class="vpv" id="vlat">--</div></div>
-<div class="vpi"><div class="vpl">VESSEL LON</div><div class="vpv" id="vlon">--</div></div>
-<div class="vpi"><div class="vpl">STATUS</div><div class="vpv" id="vstatus" style="color:var(--green)">READY</div></div>
-</div>
-<div id="pbody">
-<div class="card"><div class="ctitle">Chart Layers</div><div class="layer-row">
-<div class="lbtn on" id="lb-nautical" onclick="toggleLayer('nautical')"><span class="li">&#x1F5FA;</span><div class="ln">NAUTICAL</div><div class="ls">Esri Ocean + OpenSeaMap</div></div>
-<div class="lbtn on" id="lb-topo" onclick="toggleLayer('topo')"><span class="li">&#x1F3D4;</span><div class="ln">TOPOGRAPHIC</div><div class="ls">OpenTopoMap (SRTM)</div></div>
-</div></div>
-<div class="card"><div class="ctitle"><span>Zoom Levels</span><span id="zsummary" style="color:var(--violet);font-size:7px;">z11 z12 z13</span></div><div class="zgrid" id="zgrid"></div></div>
-<div class="card"><div class="ctitle">Cache Coverage Overlay</div>
-<button id="cov-btn" onclick="toggleCoverage()">SHOW CACHE COVERAGE</button>
-<div class="leg"><div class="leg-i"><div class="leg-sq" style="background:#00ff9f"></div>SSD</div><div class="leg-i"><div class="leg-sq" style="background:#00aaff"></div>GDrive</div><div class="leg-i"><div class="leg-sq" style="background:#ffb300"></div>Partial</div><div class="leg-i"><div class="leg-sq" style="background:rgba(255,71,87,0.6)"></div>Missing</div></div>
-<div id="cov-status" style="font-size:7px;font-family:Roboto Mono,monospace;color:var(--dim);margin-top:4px;"></div>
-</div>
-<div class="card"><div class="ctitle">Coverage Area</div>
-<div class="pgrid">
-<div class="pbtn" onclick="setRadius(5,this)">VESSEL +5nm</div>
-<div class="pbtn" onclick="setRadius(20,this)">VESSEL +20nm</div>
-<div class="pbtn" onclick="setRadius(50,this)">VESSEL +50nm</div>
-<div class="pbtn" onclick="setRadius(100,this)">VESSEL +100nm</div>
-</div>
-<button id="draw-btn" onclick="toggleDraw()">DRAW RECTANGLE ON MAP</button>
-<div id="bbox-info">No area selected.</div></div>
-<div class="card"><div class="ctitle">Estimate</div><div class="sgrid">
-<div class="si"><div class="sn" id="stiles">0</div><div class="sl">TILES</div></div>
-<div class="si"><div class="sn" id="smb">0</div><div class="sl">EST. MB</div></div>
-<div class="si"><div class="sn" id="seta">--</div><div class="sl">EST. MIN</div></div>
-</div></div>
-<button id="dl-btn" onclick="startDL()" disabled>SELECT AREA FIRST</button>
-<div id="pw"><div class="card"><div class="ctitle"><span>Downloading</span><span id="ppct" style="color:var(--cyan)">0%</span></div>
-<div class="pbb"><div class="pb" id="pbar"></div></div>
-<div class="ptxt"><span id="pdone">0 / 0 tiles</span><span id="perrs" style="color:var(--red)"></span></div></div></div>
-<div class="card"><div class="ctitle">Job Log</div><div id="log"><div class="ll ok">System ready.</div></div></div>
-</div></div></div>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
-<script>
-var vLat=-38.487,vLon=145.620,bbox=null,drawing=false,pollT=null,selRect=null;
-var layers=new Set(['nautical','topo']),zooms=new Set([11,12,13]);
-var ZMETA={8:{nm:'200nm',k:6},9:{nm:'100nm',k:8},10:{nm:'50nm',k:10},11:{nm:'25nm',k:12},12:{nm:'12nm',k:14},13:{nm:'6nm',k:16},14:{nm:'3nm',k:20},15:{nm:'1.5nm',k:24}};
-var LCOUNT={nautical:3,topo:1};
-var map=L.map('map',{zoomControl:true,attributionControl:false}).setView([vLat,vLon],10);
-L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{maxZoom:20}).addTo(map);
-L.tileLayer('https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png',{maxZoom:18,opacity:0.7}).addTo(map);
-var vi=L.divIcon({className:'',html:'<div style="font-size:20px;color:#00d4ff;filter:drop-shadow(0 0 5px #00d4ff);line-height:1;">&#9650;</div>',iconSize:[20,20],iconAnchor:[10,10]});
-var vMark=L.marker([vLat,vLon],{icon:vi}).addTo(map);
-var dI=new L.FeatureGroup();map.addLayer(dI);
-var dC=new L.Control.Draw({draw:{rectangle:{shapeOptions:{color:'#a78bfa',fillColor:'rgba(167,139,250,0.12)',weight:2}},polyline:false,polygon:false,circle:false,marker:false,circlemarker:false},edit:{featureGroup:dI}});
-map.on(L.Draw.Event.CREATED,function(e){dI.clearLayers();dI.addLayer(e.layer);var b=e.layer.getBounds();setBbox({N:b.getNorth(),S:b.getSouth(),E:b.getEast(),W:b.getWest()});drawing=false;var db=document.getElementById('draw-btn');db.classList.remove('on');db.textContent='DRAW RECTANGLE ON MAP';});
-function buildZooms(){var g=document.getElementById('zgrid');g.innerHTML='';Object.keys(ZMETA).forEach(function(z){var zi=parseInt(z),m=ZMETA[z],d=document.createElement('div');d.className='zbtn'+(zooms.has(zi)?' on':'');d.id='zb'+z;d.innerHTML='<div class="zz">z='+z+'</div><div class="znm">'+m.nm+'</div><div class="zt" id="zt'+z+'">-- tiles</div>';d.onclick=function(){toggleZ(zi);};g.appendChild(d);});updateStats();}
-function toggleZ(z){if(zooms.has(z))zooms.delete(z);else zooms.add(z);var el=document.getElementById('zb'+z);if(el)el.className='zbtn'+(zooms.has(z)?' on':'');document.getElementById('zsummary').textContent=Array.from(zooms).sort().map(function(z){return'z'+z;}).join(' ')||'none';updateStats();}
-function toggleLayer(n){if(layers.has(n))layers.delete(n);else layers.add(n);var el=document.getElementById('lb-'+n);if(el)el.classList.toggle('on',layers.has(n));updateStats();}
-function tc(N,S,E,W,z){var n=Math.pow(2,z),lo=function(l){return Math.floor((l+180)/360*n);},la=function(a){var r=a*Math.PI/180;return Math.floor((1-Math.log(Math.tan(r)+1/Math.cos(r))/Math.PI)/2*n);};return(Math.abs(lo(E)-lo(W))+1)*(Math.abs(la(N)-la(S))+1);}
-function updateStats(){if(!bbox){resetStats();return;}var tot=0,kb=0;zooms.forEach(function(z){var lc=(layers.has('nautical')?LCOUNT.nautical:0)+(layers.has('topo')?LCOUNT.topo:0),t=tc(bbox.N,bbox.S,bbox.E,bbox.W,z)*lc;tot+=t;kb+=t*(ZMETA[z]?ZMETA[z].k:12);var el=document.getElementById('zt'+z);if(el)el.textContent=t>0?t.toLocaleString()+' t':'-- tiles';});Object.keys(ZMETA).forEach(function(z){if(!zooms.has(parseInt(z))){var el=document.getElementById('zt'+z);if(el)el.textContent='-- tiles';}});var mb=(kb/1024).toFixed(1),eta=(tot/15/60).toFixed(1);document.getElementById('stiles').textContent=tot.toLocaleString();document.getElementById('smb').textContent=mb;document.getElementById('seta').textContent=eta;var ok=tot>0&&layers.size>0&&zooms.size>0,db=document.getElementById('dl-btn');db.disabled=!ok;db.textContent=ok?'CACHE '+tot.toLocaleString()+' TILES':'SELECT AREA FIRST';}
-function resetStats(){document.getElementById('stiles').textContent='0';document.getElementById('smb').textContent='0';document.getElementById('seta').textContent='--';document.getElementById('dl-btn').disabled=true;document.getElementById('dl-btn').textContent='SELECT AREA FIRST';Object.keys(ZMETA).forEach(function(z){var el=document.getElementById('zt'+z);if(el)el.textContent='-- tiles';});}
-function setBbox(b){bbox=b;document.getElementById('bbox-info').innerHTML='<span style="color:#aaa">N </span><b style="color:var(--cyan)">'+b.N.toFixed(4)+'</b>  <span style="color:#aaa">S </span><b style="color:var(--cyan)">'+b.S.toFixed(4)+'</b>  <span style="color:#aaa">E </span><b style="color:var(--cyan)">'+b.E.toFixed(4)+'</b>  <span style="color:#aaa">W </span><b style="color:var(--cyan)">'+b.W.toFixed(4)+'</b>';updateStats();}
-function setRadius(nm,el){var deg=nm/60,ld=deg/Math.cos(vLat*Math.PI/180),b={N:vLat+deg,S:vLat-deg,E:vLon+ld,W:vLon-ld};dI.clearLayers();if(selRect)map.removeLayer(selRect);selRect=L.rectangle([[b.S,b.W],[b.N,b.E]],{color:'#a78bfa',fillColor:'rgba(167,139,250,0.10)',weight:2}).addTo(map);map.fitBounds([[b.S,b.W],[b.N,b.E]],{padding:[20,20]});document.querySelectorAll('.pbtn').forEach(function(e){e.classList.remove('on');});el.classList.add('on');setBbox(b);addLog('Area: vessel +'+nm+'nm','info');}
-function toggleDraw(){if(drawing){map.removeControl(dC);drawing=false;var db=document.getElementById('draw-btn');db.classList.remove('on');db.textContent='DRAW RECTANGLE ON MAP';}else{map.addControl(dC);new L.Draw.Rectangle(map,dC.options.draw.rectangle).enable();drawing=true;var db=document.getElementById('draw-btn');db.classList.add('on');db.textContent='DRAG TO SELECT AREA...';document.querySelectorAll('.pbtn').forEach(function(e){e.classList.remove('on');});}}
-async function startDL(){if(!bbox||!layers.size||!zooms.size)return;var ly=Array.from(layers),zs=Array.from(zooms).sort();document.getElementById('dl-btn').disabled=true;document.getElementById('pw').style.display='block';addLog('Starting: '+ly.join(',')+' z='+zs.join(','),'info');try{var r=await fetch('/fetch_tile_region',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Basic '+btoa('admin:manta')},body:JSON.stringify({bbox:{N:+bbox.N,S:+bbox.S,E:+bbox.E,W:+bbox.W},zooms:zs,layers:ly})});var d=await r.json();addLog('Job '+d.job_id,'info');pollT=setInterval(function(){pollJob(d.job_id);},1200);}catch(e){addLog('ERROR: '+e,'err');document.getElementById('dl-btn').disabled=false;}}
-async function pollJob(id){try{var r=await fetch('/tile_job_status/'+id,{headers:{'Authorization':'Basic '+btoa('admin:manta')}});var d=await r.json();var p=d.total>0?Math.round(d.done/d.total*100):0;document.getElementById('pbar').style.width=p+'%';document.getElementById('ppct').textContent=p+'%';document.getElementById('pdone').textContent=d.done.toLocaleString()+'/'+d.total.toLocaleString()+' tiles';if(d.errors>0)document.getElementById('perrs').textContent=d.errors+' errors';if(d.status==='done'){clearInterval(pollT);addLog('Done: '+d.done+' tiles ('+d.errors+' errors)',d.errors===0?'ok':'err');document.getElementById('dl-btn').disabled=false;document.getElementById('dl-btn').textContent='DONE - CACHE MORE';}}catch(e){}}
-async function fetchVessel(){try{var r=await fetch('/status_api?bust='+Date.now());var d=await r.json();if(d.lat&&d.lat!==0){vLat=d.lat;vLon=d.lon;}vMark.setLatLng([vLat,vLon]);document.getElementById('vlat').textContent=vLat.toFixed(4);document.getElementById('vlon').textContent=vLon.toFixed(4);}catch(e){}}
-function addLog(msg,cls){var el=document.createElement('div');el.className='ll '+(cls||'');el.textContent=new Date().toTimeString().slice(0,8)+' '+msg;var l=document.getElementById('log');l.insertBefore(el,l.firstChild);if(l.children.length>20)l.removeChild(l.lastChild);}
-var covLayers=[],covOn=false;
-var COV_COLORS={ssd:'rgba(0,255,159,0.25)',gdrive:'rgba(0,170,255,0.25)',partial:'rgba(255,179,0,0.3)',missing:'rgba(255,71,87,0.18)'};
-var COV_BORDERS={ssd:'#00ff9f',gdrive:'#00aaff',partial:'#ffb300',missing:'rgba(255,71,87,0.7)'};
-async function toggleCoverage(){
-  covOn=!covOn;
-  var btn=document.getElementById('cov-btn');
-  covLayers.forEach(function(l){map.removeLayer(l);});covLayers=[];
-  if(!covOn){btn.classList.remove('on');btn.textContent='SHOW CACHE COVERAGE';document.getElementById('cov-status').textContent='';return;}
-  btn.classList.add('on');btn.textContent='LOADING...';
-  document.getElementById('cov-status').textContent='Scanning tile index...';
-  try{
-    var nm=25,zs=[10,11,12,13];
-    var url='/tile_cache_coverage?lat='+vLat+'&lon='+vLon+'&nm='+nm+'&zooms='+zs.join(',')+'&bust='+Date.now();
-    var r=await fetch(url);var d=await r.json();
-    if(d.error){document.getElementById('cov-status').textContent='Error: '+d.error;covOn=false;btn.classList.remove('on');btn.textContent='SHOW CACHE COVERAGE';return;}
-    var cnt={ssd:0,gdrive:0,partial:0,missing:0};
-    d.tiles.forEach(function(t){
-      var rect=L.rectangle([[t.lat_s,t.lon_w],[t.lat_n,t.lon_e]],{color:COV_BORDERS[t.status]||'#888',fillColor:COV_COLORS[t.status]||'rgba(128,128,128,0.15)',weight:0.5,fillOpacity:1,interactive:false});
-      rect.addTo(map);covLayers.push(rect);
-      cnt[t.status]=(cnt[t.status]||0)+1;
-    });
-    document.getElementById('cov-status').textContent='SSD:'+cnt.ssd+' GD:'+cnt.gdrive+' Partial:'+cnt.partial+' Miss:'+cnt.missing;
-    btn.textContent='HIDE COVERAGE ('+d.total+' tiles)';
-    addLog('Coverage: '+d.total+' tiles scanned at 25nm','info');
-  }catch(e){document.getElementById('cov-status').textContent='Error: '+e;covOn=false;btn.classList.remove('on');btn.textContent='SHOW CACHE COVERAGE';}
-}
-buildZooms();fetchVessel();setInterval(fetchVessel,10000);
-</script></body></html>
-"""
 
 @app.route('/tile_manager')
 @requires_auth
 def tile_manager():
     global last_known_lat, last_known_lon
-    html = _TILE_MGR_HTML.replace("var vLat=-38.487,vLon=145.620", f"var vLat={last_known_lat},vLon={last_known_lon}")
-    resp = make_response(html)
-    resp.headers.set('Content-Type', 'text/html; charset=utf-8')
-    return resp
+    return render_template('tile_manager.html', lat=last_known_lat, lon=last_known_lon)
 
 
 
@@ -9169,285 +7684,13 @@ def sentinel_job_status(job_id):
     return jsonify(job)
 
 
-_SENTINEL_MGR_HTML = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"/>
-<title>PYXIS SENTINEL CACHE MANAGER</title>
-<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
-<link rel="preconnect" href="https://fonts.googleapis.com"/>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Roboto+Mono:wght@400;600&display=swap" rel="stylesheet"/>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css"/>
-<style>
-:root{--bg:#050d1a;--glass:rgba(8,20,45,0.88);--border:rgba(0,212,255,0.18);--cyan:#00d4ff;--green:#00ff9f;--amber:#ffb300;--red:#ff4757;--violet:#a78bfa;--orange:#ff8c42;--text:#c8e6ff;--dim:#4a7a9b;}
-*{box-sizing:border-box;margin:0;padding:0;}html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-size:13px;}
-#layout{display:flex;height:100vh;width:100vw;}#map{flex:1;min-width:0;}
-#panel{width:380px;flex-shrink:0;background:var(--glass);border-left:1px solid var(--border);backdrop-filter:blur(18px);display:flex;flex-direction:column;overflow:hidden;}
-#ph{padding:12px 14px 8px;border-bottom:1px solid var(--border);background:rgba(0,0,0,0.35);}
-#ph h1{font-size:11px;font-weight:700;letter-spacing:2.5px;color:var(--orange);font-family:'Roboto Mono',monospace;}
-#ph .sub{font-size:8px;color:var(--dim);letter-spacing:1px;margin-top:2px;}
-#ph .badge{display:inline-block;font-size:7px;background:rgba(255,140,66,0.15);border:1px solid rgba(255,140,66,0.3);color:var(--orange);padding:1px 5px;border-radius:3px;margin-top:4px;font-family:'Roboto Mono',monospace;letter-spacing:1px;}
-#vpos{display:flex;gap:10px;padding:7px 14px;background:rgba(255,140,66,0.04);border-bottom:1px solid var(--border);font-family:'Roboto Mono',monospace;}
-.vpi{display:flex;flex-direction:column;}.vpl{font-size:7px;letter-spacing:1.5px;color:var(--dim);text-transform:uppercase;}.vpv{font-size:10px;color:var(--orange);font-weight:600;}
-#pbody{flex:1;overflow-y:auto;padding:10px;display:flex;flex-direction:column;gap:8px;}
-.card{background:rgba(0,0,0,0.28);border:1px solid var(--border);border-radius:8px;padding:9px;}
-.ctitle{font-size:8px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:7px;font-family:'Roboto Mono',monospace;display:flex;justify-content:space-between;align-items:center;}
-.layer-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px;}
-.lbtn{padding:7px 4px;background:rgba(0,0,0,0.3);border:1px solid var(--border);border-radius:6px;cursor:pointer;text-align:center;transition:all .2s;user-select:none;}
-.lbtn.on{border-color:var(--orange);background:rgba(255,140,66,0.12);}
-.ln{font-size:9px;letter-spacing:1px;font-family:'Roboto Mono',monospace;color:var(--dim);}.lbtn.on .ln{color:var(--orange);}
-.ls{font-size:7px;color:var(--dim);margin-top:1px;}
-.zgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;}
-.zbtn{padding:5px 2px;background:rgba(0,0,0,0.3);border:1px solid var(--border);border-radius:5px;cursor:pointer;text-align:center;transition:all .2s;font-family:'Roboto Mono',monospace;user-select:none;}
-.zz{font-size:10px;font-weight:700;color:var(--text);}.znm{font-size:7px;color:var(--dim);}.zt{font-size:7px;color:var(--dim);margin-top:1px;}
-.zbtn.on{border-color:var(--violet);background:rgba(167,139,250,0.12);}.zbtn.on .zz{color:var(--violet);}
-.zbtn.warn{border-color:var(--amber)!important;}.zbtn.warn .zz{color:var(--amber)!important;}
-.pgrid{display:grid;grid-template-columns:1fr 1fr;gap:5px;}
-.pbtn{padding:7px 3px;background:rgba(0,0,0,0.3);border:1px solid var(--border);border-radius:6px;cursor:pointer;text-align:center;font-size:9px;font-family:'Roboto Mono',monospace;color:var(--text);transition:all .2s;user-select:none;}
-.pbtn:hover{background:rgba(255,140,66,0.08);border-color:rgba(255,140,66,0.35);}
-.pbtn.on{background:rgba(255,140,66,0.12);border-color:var(--orange);color:var(--orange);}
-#draw-btn{width:100%;margin-top:6px;padding:9px;background:rgba(167,139,250,0.08);border:1px solid rgba(167,139,250,0.3);border-radius:7px;color:var(--violet);font-size:10px;font-weight:600;font-family:'Roboto Mono',monospace;cursor:pointer;letter-spacing:1px;transition:all .2s;}
-#draw-btn.on{background:rgba(167,139,250,0.22);border-color:var(--violet);}
-#bbox-info{font-size:8px;font-family:'Roboto Mono',monospace;color:var(--dim);margin-top:5px;line-height:1.7;}
-.cloud-row{display:flex;align-items:center;gap:8px;margin-top:6px;}
-.cloud-lbl{font-size:8px;font-family:'Roboto Mono',monospace;color:var(--dim);white-space:nowrap;}
-#maxcc-sl{flex:1;accent-color:var(--orange);}
-#maxcc-val{font-size:9px;font-family:'Roboto Mono',monospace;color:var(--orange);min-width:28px;text-align:right;}
-.sgrid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;}
-.si{text-align:center;padding:6px;background:rgba(0,0,0,0.2);border-radius:5px;}
-.sn{font-size:15px;font-weight:700;font-family:'Roboto Mono',monospace;color:var(--orange);}
-.sn.warn{color:var(--amber);}.sn.bad{color:var(--red);}
-.sl{font-size:7px;color:var(--dim);letter-spacing:1px;margin-top:1px;}
-#dl-btn{width:100%;padding:11px;background:linear-gradient(135deg,rgba(255,140,66,0.18),rgba(200,80,0,0.18));border:1px solid var(--orange);border-radius:8px;color:var(--orange);font-size:12px;font-weight:700;font-family:'Roboto Mono',monospace;cursor:pointer;letter-spacing:2px;transition:all .2s;}
-#dl-btn:hover:not(:disabled){background:linear-gradient(135deg,rgba(255,140,66,0.32),rgba(200,80,0,0.32));}
-#dl-btn:disabled{opacity:0.38;cursor:not-allowed;}
-#pw{display:none;}.pbb{background:rgba(0,0,0,0.3);border-radius:4px;height:5px;overflow:hidden;margin:5px 0;}
-.pb{height:5px;border-radius:4px;background:linear-gradient(90deg,var(--orange),#ff4500);transition:width .5s;width:0%;}
-.ptxt{display:flex;justify-content:space-between;font-size:8px;font-family:'Roboto Mono',monospace;color:var(--dim);}
-#log{font-size:8px;font-family:'Roboto Mono',monospace;color:var(--dim);max-height:90px;overflow-y:auto;}
-.ll{padding:2px 0;border-bottom:1px solid rgba(255,140,66,0.05);}.ll.ok{color:var(--green);}.ll.err{color:var(--red);}.ll.info{color:var(--orange);}
-#cov-btn{width:100%;padding:8px;background:rgba(0,255,159,0.08);border:1px solid rgba(0,255,159,0.3);border-radius:7px;color:var(--green);font-size:9px;font-weight:600;font-family:'Roboto Mono',monospace;cursor:pointer;letter-spacing:1px;transition:all .2s;margin-top:6px;}
-#cov-btn.on{background:rgba(0,255,159,0.2);border-color:var(--green);}
-.leg{display:flex;gap:6px;margin-top:5px;flex-wrap:wrap;}
-.leg-i{display:flex;align-items:center;gap:3px;font-size:7px;font-family:'Roboto Mono',monospace;color:var(--dim);}
-.leg-sq{width:9px;height:9px;border-radius:2px;}
-</style></head><body>
-<div id="layout"><div id="map"></div>
-<div id="panel">
-<div id="ph">
-  <h1>PYXIS SENTINEL CACHE</h1>
-  <div class="sub">PRE-CACHE SENTINEL-2 SATELLITE IMAGERY FOR OFFLINE USE</div>
-  <div class="badge">COPERNICUS DATA SPACE &bull; S2-L2A &bull; 10m RESOLUTION</div>
-</div>
-<div id="vpos">
-  <div class="vpi"><div class="vpl">VESSEL LAT</div><div class="vpv" id="vlat">--</div></div>
-  <div class="vpi"><div class="vpl">VESSEL LON</div><div class="vpv" id="vlon">--</div></div>
-  <div class="vpi"><div class="vpl">STATUS</div><div class="vpv" id="vstatus" style="color:var(--green)">READY</div></div>
-</div>
-<div id="pbody">
-
-<div class="card"><div class="ctitle">Image Layer</div>
-<div class="layer-grid" id="lgrid"></div></div>
-
-<div class="card"><div class="ctitle"><span>Zoom Levels</span><span id="zsummary" style="color:var(--violet);font-size:7px;">z10 z11 z12</span></div>
-<div class="zgrid" id="zgrid"></div></div>
-
-<div class="card"><div class="ctitle">Cloud Cover Filter</div>
-<div class="cloud-row">
-  <span class="cloud-lbl">MAX CLOUD</span>
-  <input type="range" id="maxcc-sl" min="5" max="100" value="20" oninput="updateMaxcc()"/>
-  <span id="maxcc-val">20%</span>
-</div>
-<div style="font-size:7px;color:var(--dim);margin-top:4px;font-family:'Roboto Mono',monospace;">Lower = clearer images. Tiles skipped if clouds exceed threshold.</div>
-</div>
-
-<div class="card"><div class="ctitle">Live Preview & Coverage</div>
-<button id="sat-prev-btn" onclick="toggleSatPreview()" style="width:100%;padding:8px;background:rgba(255,140,66,0.08);border:1px solid rgba(255,140,66,0.3);border-radius:7px;color:var(--orange);font-size:9px;font-weight:600;font-family:'Roboto Mono',monospace;cursor:pointer;letter-spacing:1px;transition:all .2s;margin-bottom:6px;">PREVIEW LIVE SATELLITE</button>
-<div style="font-size:7px;color:var(--dim);font-family:'Roboto Mono',monospace;margin-bottom:6px;">Streams live Sentinel-2 directly on map. Uses free-tier quota.</div>
-<button id="cov-btn" onclick="toggleCoverage()">SHOW CACHED TILE COVERAGE</button>
-<div class="leg">
-  <div class="leg-i"><div class="leg-sq" style="background:#00ff9f"></div>CACHED (FRESH)</div>
-  <div class="leg-i"><div class="leg-sq" style="background:#ffb300"></div>STALE (>14d)</div>
-  <div class="leg-i"><div class="leg-sq" style="background:#00aaff"></div>GDRIVE</div>
-  <div class="leg-i"><div class="leg-sq" style="background:rgba(255,71,87,0.6)"></div>MISSING</div>
-</div>
-<div id="cov-status" style="font-size:7px;font-family:Roboto Mono,monospace;color:var(--dim);margin-top:4px;"></div>
-</div>
-
-<div class="card"><div class="ctitle">Coverage Area</div>
-<div class="pgrid">
-  <div class="pbtn" onclick="setRadius(10,this)">VESSEL +10nm</div>
-  <div class="pbtn" onclick="setRadius(25,this)">VESSEL +25nm</div>
-  <div class="pbtn" onclick="setRadius(50,this)">VESSEL +50nm</div>
-  <div class="pbtn" onclick="setRadius(100,this)">VESSEL +100nm</div>
-</div>
-<button id="draw-btn" onclick="toggleDraw()">DRAW RECTANGLE ON MAP</button>
-<div id="bbox-info">No area selected.</div></div>
-
-<div class="card"><div class="ctitle">Estimate</div><div class="sgrid">
-<div class="si"><div class="sn" id="stiles">0</div><div class="sl">TILES</div></div>
-<div class="si"><div class="sn" id="smb">0</div><div class="sl">EST. MB</div></div>
-<div class="si"><div class="sn" id="seta">--</div><div class="sl">EST. MIN</div></div>
-</div>
-<div style="font-size:7px;color:var(--dim);margin-top:5px;font-family:'Roboto Mono',monospace;">1 req/sec rate limit (free tier). Large areas may take hours. Already-cached tiles are skipped.</div>
-</div>
-
-<button id="dl-btn" onclick="startDL()" disabled>SELECT AREA FIRST</button>
-<div id="pw"><div class="card"><div class="ctitle"><span>Downloading</span><span id="ppct" style="color:var(--orange)">0%</span></div>
-<div class="pbb"><div class="pb" id="pbar"></div></div>
-<div class="ptxt"><span id="pdone">0 / 0 tiles</span><span id="pskip" style="color:var(--dim)"></span><span id="perrs" style="color:var(--red)"></span></div>
-</div></div>
-
-<div class="card"><div class="ctitle">Job Log</div><div id="log"><div class="ll ok">Sentinel cache manager ready.</div></div></div>
-</div></div></div>
-
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
-<script>
-var vLat=__LAT__,vLon=__LON__,bbox=null,drawing=false,pollT=null,selRect=null;
-var activeLayer='TRUE_COLOR',zooms=new Set([10,11,12]);
-var LAYERS=[
-  {id:'TRUE_COLOR',   name:'TRUE COLOR',   desc:'Natural RGB'},
-  {id:'AGRICULTURE',  name:'AGRICULTURE',  desc:'Crop analysis'},
-  {id:'BATHYMETRIC',  name:'BATHYMETRIC',  desc:'Coastal depth'},
-  {id:'COLOR_INFRARED',name:'NIR',         desc:'Vegetation health'},
-  {id:'GEOLOGY',      name:'GEOLOGY',      desc:'Rock/sediment'},
-  {id:'MOISTURE_INDEX',name:'MOISTURE',    desc:'Water content'},
-];
-var ZMETA={8:{nm:'200nm'},9:{nm:'100nm'},10:{nm:'50nm'},11:{nm:'25nm'},12:{nm:'12nm'},13:{nm:'6nm',warn:true},14:{nm:'3nm',warn:true}};
-
-var SH_WMS='https://sh.dataspace.copernicus.eu/ogc/wms/7ba55959-6207-4d1f-9ee7-f418f901bf08';
-var map=L.map('map',{zoomControl:true,attributionControl:false}).setView([vLat,vLon],10);
-var cartoDB=L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{maxZoom:20}).addTo(map);
-L.tileLayer('https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png',{maxZoom:18,opacity:0.5}).addTo(map);
-var sentinelWMS=null, satOn=false;
-function buildSentinelWMS(layer,maxcc){
-  return L.tileLayer.wms(SH_WMS,{layers:layer,format:'image/jpeg',transparent:false,version:'1.3.0',crs:L.CRS.EPSG4326,maxcc:maxcc||20,attribution:'Copernicus/ESA'});
-}
-var vi=L.divIcon({className:'',html:'<div style="font-size:20px;color:#ff8c42;filter:drop-shadow(0 0 5px #ff8c42);line-height:1;">&#9650;</div>',iconSize:[20,20],iconAnchor:[10,10]});
-var vMark=L.marker([vLat,vLon],{icon:vi}).addTo(map);
-var dI=new L.FeatureGroup();map.addLayer(dI);
-var dC=new L.Control.Draw({draw:{rectangle:{shapeOptions:{color:'#ff8c42',fillColor:'rgba(255,140,66,0.1)',weight:2}},polyline:false,polygon:false,circle:false,marker:false,circlemarker:false},edit:{featureGroup:dI}});
-map.on(L.Draw.Event.CREATED,function(e){dI.clearLayers();dI.addLayer(e.layer);var b=e.layer.getBounds();setBbox({N:b.getNorth(),S:b.getSouth(),E:b.getEast(),W:b.getWest()});drawing=false;var db=document.getElementById('draw-btn');db.classList.remove('on');db.textContent='DRAW RECTANGLE ON MAP';});
-function toggleSatPreview(){
-  var btn=document.getElementById('sat-prev-btn');
-  if(satOn){
-    if(sentinelWMS){map.removeLayer(sentinelWMS);sentinelWMS=null;}
-    satOn=false;btn.classList.remove('on');btn.textContent='PREVIEW LIVE SATELLITE';
-  }else{
-    var maxcc=parseInt(document.getElementById('maxcc-sl').value)||20;
-    sentinelWMS=buildSentinelWMS(activeLayer,maxcc).addTo(map);
-    satOn=true;btn.classList.add('on');btn.textContent='HIDE SATELLITE PREVIEW';
-    addLog('Live '+activeLayer+' layer on (uses free tier quota)','info');
-  }
-}
-function refreshSatPreview(){
-  if(!satOn)return;
-  if(sentinelWMS){map.removeLayer(sentinelWMS);sentinelWMS=null;}
-  var maxcc=parseInt(document.getElementById('maxcc-sl').value)||20;
-  sentinelWMS=buildSentinelWMS(activeLayer,maxcc).addTo(map);
-}
-
-function buildLayers(){
-  var g=document.getElementById('lgrid');g.innerHTML='';
-  LAYERS.forEach(function(l){
-    var d=document.createElement('div');
-    d.className='lbtn'+(l.id===activeLayer?' on':'');
-    d.innerHTML='<div class="ln">'+l.name+'</div><div class="ls">'+l.desc+'</div>';
-    d.onclick=function(){activeLayer=l.id;document.querySelectorAll('.lbtn').forEach(function(e){e.classList.remove('on');});d.classList.add('on');addLog('Layer: '+l.name,'info');updateStats();refreshSatPreview();};
-    g.appendChild(d);
-  });
-}
-function buildZooms(){
-  var g=document.getElementById('zgrid');g.innerHTML='';
-  Object.keys(ZMETA).forEach(function(z){
-    var zi=parseInt(z),m=ZMETA[z],d=document.createElement('div');
-    d.className='zbtn'+(zooms.has(zi)?' on':'')+(m.warn?' warn':'');
-    d.id='zb'+z;
-    d.innerHTML='<div class="zz">z='+z+'</div><div class="znm">'+m.nm+'</div><div class="zt" id="zt'+z+'">-- t</div>';
-    if(m.warn)d.title='Warning: high tile count, takes long at 1 req/sec';
-    d.onclick=function(){toggleZ(zi);};
-    g.appendChild(d);
-  });
-  updateStats();
-}
-function toggleZ(z){if(zooms.has(z))zooms.delete(z);else zooms.add(z);var el=document.getElementById('zb'+z);if(el)el.className='zbtn'+(zooms.has(z)?' on':'')+(ZMETA[z].warn?' warn':'');document.getElementById('zsummary').textContent=Array.from(zooms).sort().map(function(z){return'z'+z;}).join(' ')||'none';updateStats();}
-function updateMaxcc(){var v=document.getElementById('maxcc-sl').value;document.getElementById('maxcc-val').textContent=v+'%';}
-function tc(N,S,E,W,z){var n=Math.pow(2,z),lo=function(l){return Math.floor((l+180)/360*n);},la=function(a){var r=a*Math.PI/180;return Math.floor((1-Math.log(Math.tan(r)+1/Math.cos(r))/Math.PI)/2*n);};return(Math.abs(lo(E)-lo(W))+1)*(Math.abs(la(N)-la(S))+1);}
-function updateStats(){
-  if(!bbox){resetStats();return;}
-  var tot=0;
-  zooms.forEach(function(z){var t=tc(bbox.N,bbox.S,bbox.E,bbox.W,z);tot+=t;var el=document.getElementById('zt'+z);if(el)el.textContent=t>0?t+' t':'-- t';});
-  Object.keys(ZMETA).forEach(function(z){if(!zooms.has(parseInt(z))){var el=document.getElementById('zt'+z);if(el)el.textContent='-- t';}});
-  var mb=(tot*15/1024).toFixed(1),eta=(tot/60).toFixed(0);
-  document.getElementById('stiles').textContent=tot.toLocaleString();
-  document.getElementById('smb').textContent=mb;
-  document.getElementById('seta').textContent=eta;
-  var db=document.getElementById('dl-btn'),ok=tot>0&&zooms.size>0;
-  db.disabled=!ok;db.textContent=ok?'CACHE '+tot.toLocaleString()+' TILES':'SELECT AREA FIRST';
-}
-function resetStats(){document.getElementById('stiles').textContent='0';document.getElementById('smb').textContent='0';document.getElementById('seta').textContent='--';document.getElementById('dl-btn').disabled=true;document.getElementById('dl-btn').textContent='SELECT AREA FIRST';Object.keys(ZMETA).forEach(function(z){var el=document.getElementById('zt'+z);if(el)el.textContent='-- t';});}
-function setBbox(b){bbox=b;document.getElementById('bbox-info').innerHTML='<span style="color:#aaa">N </span><b style="color:var(--orange)">'+b.N.toFixed(4)+'</b>  <span style="color:#aaa">S </span><b style="color:var(--orange)">'+b.S.toFixed(4)+'</b>  <span style="color:#aaa">E </span><b style="color:var(--orange)">'+b.E.toFixed(4)+'</b>  <span style="color:#aaa">W </span><b style="color:var(--orange)">'+b.W.toFixed(4)+'</b>';updateStats();}
-function setRadius(nm,el){var deg=nm/60,ld=deg/Math.cos(vLat*Math.PI/180),b={N:vLat+deg,S:vLat-deg,E:vLon+ld,W:vLon-ld};dI.clearLayers();if(selRect)map.removeLayer(selRect);selRect=L.rectangle([[b.S,b.W],[b.N,b.E]],{color:'#ff8c42',fillColor:'rgba(255,140,66,0.08)',weight:2}).addTo(map);map.fitBounds([[b.S,b.W],[b.N,b.E]],{padding:[20,20]});document.querySelectorAll('.pbtn').forEach(function(e){e.classList.remove('on');});el.classList.add('on');setBbox(b);addLog('Area: vessel +'+nm+'nm','info');}
-function toggleDraw(){if(drawing){map.removeControl(dC);drawing=false;var db=document.getElementById('draw-btn');db.classList.remove('on');db.textContent='DRAW RECTANGLE ON MAP';}else{map.addControl(dC);new L.Draw.Rectangle(map,dC.options.draw.rectangle).enable();drawing=true;var db=document.getElementById('draw-btn');db.classList.add('on');db.textContent='DRAG TO SELECT AREA...';document.querySelectorAll('.pbtn').forEach(function(e){e.classList.remove('on');});}}
-async function startDL(){
-  if(!bbox||!zooms.size)return;
-  var zs=Array.from(zooms).sort(),maxcc=parseInt(document.getElementById('maxcc-sl').value);
-  document.getElementById('dl-btn').disabled=true;document.getElementById('pw').style.display='block';
-  addLog('Starting: '+activeLayer+' z='+zs.join(',')+' MAXCC='+maxcc+'%','info');
-  try{
-    var r=await fetch('/fetch_sentinel_region',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Basic '+btoa('admin:manta')},body:JSON.stringify({bbox:{N:+bbox.N,S:+bbox.S,E:+bbox.E,W:+bbox.W},zooms:zs,layer:activeLayer,maxcc:maxcc})});
-    var d=await r.json();addLog('Job '+d.job_id+' queued','info');
-    pollT=setInterval(function(){pollJob(d.job_id);},1500);
-  }catch(e){addLog('ERROR: '+e,'err');document.getElementById('dl-btn').disabled=false;}
-}
-async function pollJob(id){
-  try{
-    var r=await fetch('/sentinel_job_status/'+id,{headers:{'Authorization':'Basic '+btoa('admin:manta')}});
-    var d=await r.json();
-    var tot=d.total||1,done=d.done+d.skipped,p=Math.round(done/tot*100);
-    document.getElementById('pbar').style.width=p+'%';document.getElementById('ppct').textContent=p+'%';
-    document.getElementById('pdone').textContent=d.done+' fetched / '+tot+' total';
-    document.getElementById('pskip').textContent=d.skipped?' ('+d.skipped+' cached)':'';
-    if(d.errors>0)document.getElementById('perrs').textContent=d.errors+' err';
-    if(d.status==='done'){clearInterval(pollT);addLog('Done: '+d.done+' fetched, '+d.skipped+' skipped, '+d.errors+' errors',d.errors===0?'ok':'err');document.getElementById('dl-btn').disabled=false;document.getElementById('dl-btn').textContent='CACHE MORE';}
-  }catch(e){}
-}
-async function fetchVessel(){try{var r=await fetch('/status_api?bust='+Date.now());var d=await r.json();if(d.lat&&d.lat!==0){vLat=d.lat;vLon=d.lon;}vMark.setLatLng([vLat,vLon]);document.getElementById('vlat').textContent=vLat.toFixed(4);document.getElementById('vlon').textContent=vLon.toFixed(4);}catch(e){}}
-function addLog(msg,cls){var el=document.createElement('div');el.className='ll '+(cls||'');el.textContent=new Date().toTimeString().slice(0,8)+' '+msg;var l=document.getElementById('log');l.insertBefore(el,l.firstChild);if(l.children.length>20)l.removeChild(l.lastChild);}
-var covLayers=[],covOn=false;
-var COV_COLORS={fresh:'rgba(0,255,159,0.25)',stale:'rgba(255,179,0,0.3)',gdrive:'rgba(0,170,255,0.25)',missing:'rgba(255,71,87,0.18)'};
-var COV_BORDERS={fresh:'#00ff9f',stale:'#ffb300',gdrive:'#00aaff',missing:'rgba(255,71,87,0.7)'};
-async function toggleCoverage(){
-  covOn=!covOn;var btn=document.getElementById('cov-btn');
-  covLayers.forEach(function(l){map.removeLayer(l);});covLayers=[];
-  if(!covOn){btn.classList.remove('on');btn.textContent='SHOW SENTINEL COVERAGE';document.getElementById('cov-status').textContent='';return;}
-  btn.classList.add('on');btn.textContent='LOADING...';document.getElementById('cov-status').textContent='Scanning sentinel tile cache...';
-  try{
-    var zs=[10,11,12],nm=25;
-    var url='/sentinel_cache_coverage?lat='+vLat+'&lon='+vLon+'&nm='+nm+'&zooms='+zs.join(',')+'&bust='+Date.now();
-    var r=await fetch(url,{headers:{'Authorization':'Basic '+btoa('admin:manta')}});var d=await r.json();
-    if(d.error){document.getElementById('cov-status').textContent='Error: '+d.error;covOn=false;btn.classList.remove('on');btn.textContent='SHOW SENTINEL COVERAGE';return;}
-    var cnt={fresh:0,stale:0,gdrive:0,missing:0};
-    d.tiles.forEach(function(t){
-      var rect=L.rectangle([[t.lat_s,t.lon_w],[t.lat_n,t.lon_e]],{color:COV_BORDERS[t.status]||'#888',fillColor:COV_COLORS[t.status]||'rgba(128,128,128,0.15)',weight:0.5,fillOpacity:1,interactive:false});
-      rect.addTo(map);covLayers.push(rect);cnt[t.status]=(cnt[t.status]||0)+1;
-    });
-    document.getElementById('cov-status').textContent='Fresh:'+cnt.fresh+' Stale:'+cnt.stale+' GD:'+cnt.gdrive+' Miss:'+cnt.missing;
-    btn.textContent='HIDE COVERAGE ('+d.total+' tiles)';
-    addLog('Coverage: '+d.total+' tiles at '+nm+'nm','info');
-  }catch(e){document.getElementById('cov-status').textContent='Error: '+e;covOn=false;btn.classList.remove('on');btn.textContent='SHOW SENTINEL COVERAGE';}
-}
-buildLayers();buildZooms();fetchVessel();setInterval(fetchVessel,10000);
-</script></body></html>"""
 
 
 @app.route('/sentinel_manager')
 @requires_auth
 def sentinel_manager():
     global last_known_lat, last_known_lon
-    html = _SENTINEL_MGR_HTML.replace('__LAT__', str(last_known_lat or -38.487)).replace('__LON__', str(last_known_lon or 145.620))
-    resp = make_response(html)
-    resp.headers.set('Content-Type', 'text/html; charset=utf-8')
-    return resp
+    return render_template('sentinel_manager.html', lat=last_known_lat or -38.487, lon=last_known_lon or 145.620)
 
 def _fetch_region_worker(job_id, bbox, zooms, layers):
     """Background thread: pre-fetches all tiles for a bbox+zoom set into tile cache."""
@@ -9518,123 +7761,7 @@ def topo_explorer():
     global last_known_lat, last_known_lon
     vlat = round(last_known_lat, 4)
     vlon = round(last_known_lon, 4)
-    html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>Pyxis Topo Explorer</title>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;600;700&display=swap" rel="stylesheet">
-<style>
-*{{margin:0;padding:0;box-sizing:border-box;}}
-body{{background:#080c10;color:#c8ffd4;font-family:'Share Tech Mono',monospace;height:100vh;display:flex;flex-direction:column;overflow:hidden;}}
-header{{background:rgba(0,255,100,0.07);border-bottom:1px solid rgba(0,255,100,0.18);padding:10px 20px;display:flex;align-items:center;gap:16px;flex-shrink:0;}}
-h1{{font-family:'Rajdhani',sans-serif;font-size:1.3rem;font-weight:700;color:#00ff88;letter-spacing:4px;text-transform:uppercase;}}
-.tag{{font-size:.65rem;color:#4aff90;opacity:.7;}}
-.main{{display:flex;flex:1;overflow:hidden;}}
-#map{{flex:1.3;height:100%;}}
-#topo-panel{{width:510px;flex-shrink:0;background:rgba(0,20,10,0.95);border-left:1px solid rgba(0,255,100,0.15);display:flex;flex-direction:column;}}
-.topo-hdr{{padding:12px 16px;border-bottom:1px solid rgba(0,255,100,0.15);background:rgba(0,255,100,0.05);}}
-.topo-hdr h2{{font-family:'Rajdhani',sans-serif;font-size:1rem;font-weight:600;color:#00ff88;letter-spacing:3px;}}
-#coord-display{{font-size:.72rem;color:#4aff90;margin-top:3px;opacity:.85;}}
-.zoom-bar{{padding:10px 16px;border-bottom:1px solid rgba(0,255,100,0.1);display:flex;align-items:center;gap:6px;flex-wrap:wrap;}}
-.zoom-bar span{{font-size:.68rem;color:#4aff90;opacity:.7;margin-right:2px;}}
-.zb{{background:rgba(0,255,100,0.08);border:1px solid rgba(0,255,100,0.25);color:#00ff88;padding:4px 9px;font-family:'Share Tech Mono',monospace;font-size:.68rem;cursor:pointer;border-radius:3px;transition:.15s;}}
-.zb:hover{{background:rgba(0,255,100,0.22);border-color:#00ff88;}}
-.zb.active{{background:rgba(0,255,100,0.28);border-color:#00ff88;color:#fff;font-weight:bold;}}
-.vessel-btn{{background:rgba(0,150,255,0.1);border:1px solid rgba(0,150,255,0.35);color:#4aadff;padding:4px 10px;font-family:'Share Tech Mono',monospace;font-size:.68rem;cursor:pointer;border-radius:3px;transition:.15s;margin-left:auto;}}
-.vessel-btn:hover{{background:rgba(0,150,255,0.22);}}
-#img-wrap{{flex:1;display:flex;align-items:center;justify-content:center;padding:14px;overflow:hidden;position:relative;background:radial-gradient(ellipse at center,#0a1a0e 0%,#050d08 100%);}}
-#topo-img{{max-width:100%;max-height:100%;border:1px solid rgba(0,255,100,0.2);border-radius:4px;display:none;}}
-#status{{position:absolute;text-align:center;pointer-events:none;}}
-.idle{{color:#4aff90;opacity:.45;font-size:.8rem;}}
-.loading{{color:#00ff88;font-size:.82rem;animation:pulse 1s infinite;}}
-.err{{color:#ff4444;font-size:.78rem;}}
-@keyframes pulse{{0%,100%{{opacity:.55}}50%{{opacity:1}}}}
-.scale-tag{{font-size:.65rem;color:#00cc66;padding:5px 16px;border-top:1px solid rgba(0,255,100,0.08);text-align:center;opacity:.8;}}
-</style>
-</head>
-<body>
-<header>
-  <div>
-    <h1>&#9651; PYXIS TOPO EXPLORER</h1>
-    <div class="tag">TOPOGRAPHIC RECONNAISSANCE &bull; CLICK MAP TO PLACE MARKER &bull; USE ZOOM CONTROLS TO CHANGE SCALE</div>
-  </div>
-</header>
-<div class="main">
-  <div id="map"></div>
-  <div id="topo-panel">
-    <div class="topo-hdr">
-      <h2>TOPO RENDER</h2>
-      <div id="coord-display">Click map to select position</div>
-    </div>
-    <div class="zoom-bar">
-      <span>ZOOM:</span>
-      <button class="zb" onclick="setZ(10)">z10 ~10nm</button>
-      <button class="zb" onclick="setZ(11)">z11 ~5nm</button>
-      <button class="zb active" onclick="setZ(12)">z12 ~2nm</button>
-      <button class="zb" onclick="setZ(13)">z13 ~1nm</button>
-      <button class="zb" onclick="setZ(14)">z14 ~0.5nm</button>
-      <button class="zb" onclick="setZ(15)">z15 ~0.2nm</button>
-      <button class="vessel-btn" onclick="goVessel()">&#9654; VESSEL</button>
-    </div>
-    <div id="img-wrap">
-      <img id="topo-img" alt="Topo">
-      <div id="status"><div class="idle">&#9651; SELECT A POSITION ON THE MAP</div></div>
-    </div>
-    <div class="scale-tag" id="scale-tag">&mdash;</div>
-  </div>
-</div>
-<script>
-var VL={vlat}, VN={vlon};
-var cLat=null, cLon=null, cZ=12, mk=null;
-var scales={{10:'~10nm view',11:'~5nm view',12:'~2nm view',13:'~1nm view',14:'~0.5nm view',15:'~0.2nm view'}};
-
-var map = L.map('map').setView([-25.5,133.7],5);
-L.tileLayer('https://{{s}}.basemaps.cartocdn.com/dark_all/{{z}}/{{x}}/{{y}}.png',{{maxZoom:18}}).addTo(map);
-
-var vIcon=L.divIcon({{className:'',html:'<div style="width:13px;height:13px;background:#00aaff;border:2px solid #fff;border-radius:50%;box-shadow:0 0 8px #00aaff80"></div>',iconSize:[13,13],iconAnchor:[6,6]}});
-L.marker([VL,VN],{{icon:vIcon}}).addTo(map).bindPopup('<b style="color:#00ff88">PYXIS</b><br>'+VL+', '+VN);
-
-var rIcon=L.divIcon({{className:'',html:'<div style="width:15px;height:15px;background:#ff3333;border:2px solid #fff;border-radius:50%;box-shadow:0 0 10px #ff333380"></div>',iconSize:[15,15],iconAnchor:[7,7]}});
-
-map.on('click',function(e){{
-  place(parseFloat(e.latlng.lat.toFixed(5)),parseFloat(e.latlng.lng.toFixed(5)));
-}});
-
-function place(lat,lon){{
-  cLat=lat; cLon=lon;
-  if(mk)map.removeLayer(mk);
-  mk=L.marker([lat,lon],{{icon:rIcon}}).addTo(map);
-  document.getElementById('coord-display').textContent='LAT '+lat.toFixed(5)+'\u00b0   LON '+lon.toFixed(5)+'\u00b0';
-  fetch_topo();
-}}
-
-function setZ(z){{
-  cZ=z;
-  document.querySelectorAll('.zb').forEach(function(b){{b.classList.toggle('active',b.textContent.startsWith('z'+z));}});
-  if(cLat!==null)fetch_topo();
-}}
-
-function goVessel(){{map.setView([VL,VN],8);place(VL,VN);}}
-
-function fetch_topo(){{
-  if(cLat===null)return;
-  var img=document.getElementById('topo-img');
-  img.style.display='none';
-  document.getElementById('status').innerHTML='<div class="loading">&#9651; RENDERING TOPOGRAPHIC DATA...</div>';
-  document.getElementById('scale-tag').textContent='\u2014';
-  var url='/topo_map/'+Date.now()+'/topo.jpg?z='+cZ+'&lat='+cLat+'&lon='+cLon+'&w=460&h=460';
-  img.onload=function(){{img.style.display='block';document.getElementById('status').innerHTML='';document.getElementById('scale-tag').textContent=scales[cZ]||'';}};
-  img.onerror=function(){{document.getElementById('status').innerHTML='<div class="err">&#9651; RENDER FAILED \u2014 CHECK PROXY LOGS</div>';}};
-  img.src=url;
-}}
-</script>
-</body>
-</html>"""
-    return html, 200, {'Content-Type': 'text/html; charset=utf-8'}
+    return render_template('topo_explorer.html', vlat=vlat, vlon=vlon)
 
 
 @app.route('/topo_map')

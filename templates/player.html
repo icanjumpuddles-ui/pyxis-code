@@ -1,0 +1,726 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<title>PYXIS TACTICAL</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&family=Roboto+Mono:wght@400;600&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+:root{--bg:#050d1a;--glass:rgba(8,20,45,0.82);--border:rgba(0,212,255,0.18);--cyan:#00d4ff;--green:#00ff9f;--amber:#ffb300;--red:#ff4757;--text:#c8e6ff;--dim:#4a7a9b;}
+*{box-sizing:border-box;margin:0;padding:0;}
+html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;}
+#layout{display:flex;height:100vh;width:100vw;}
+#map-panel{flex:1;position:relative;min-width:0;}
+#map{width:100%;height:100%;}
+#side{width:360px;flex-shrink:0;background:var(--glass);border-left:1px solid var(--border);backdrop-filter:blur(20px);display:flex;flex-direction:column;overflow:hidden;}
+/* Tabs */
+.tabs{display:flex;flex-shrink:0;border-bottom:1px solid var(--border);}
+.tab{flex:1;padding:10px 0;text-align:center;font-size:10px;letter-spacing:1.5px;font-family:'Roboto Mono',monospace;color:var(--dim);cursor:pointer;transition:all .2s;border-bottom:2px solid transparent;}
+.tab.active{color:var(--cyan);border-bottom:2px solid var(--cyan);}
+.tab:hover:not(.active){color:var(--text);}
+/* Tab panels */
+.panel{display:none;flex:1;overflow-y:auto;padding:12px;flex-direction:column;gap:10px;}
+.panel.active{display:flex;}
+/* Cards / sections */
+.card{background:rgba(0,0,0,0.25);border:1px solid var(--border);border-radius:10px;padding:10px;}
+.card-title{font-size:9px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:8px;font-family:'Roboto Mono',monospace;}
+/* Audio player */
+#player-main{background:rgba(0,212,255,0.06);border:1px solid rgba(0,212,255,0.25);border-radius:10px;padding:12px;}
+#arm-btn-v{width:100%;padding:10px;background:linear-gradient(135deg,var(--amber),#ff6b00);color:#000;border:none;border-radius:8px;font-weight:700;font-size:12px;cursor:pointer;letter-spacing:1px;animation:pulse 2s infinite;margin-bottom:8px;}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(255,179,0,0.4);}50%{box-shadow:0 0 0 10px rgba(255,179,0,0);}}
+#armed-badge-v{display:none;background:rgba(0,255,159,0.12);border:1px solid var(--green);border-radius:6px;padding:5px 10px;font-size:10px;color:var(--green);font-family:'Roboto Mono',monospace;letter-spacing:1px;text-align:center;margin-bottom:8px;}
+#now-type{font-size:9px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;}
+#now-text{font-size:11px;color:var(--text);line-height:1.4;margin:3px 0 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+audio#mainAudio{width:100%;height:30px;accent-color:var(--cyan);}
+.audio-item{display:flex;align-items:flex-start;gap:8px;padding:6px 0;border-bottom:1px solid rgba(0,212,255,0.07);}
+.audio-item:last-child{border-bottom:none;}
+.a-type{flex-shrink:0;font-size:9px;font-family:'Roboto Mono',monospace;padding:2px 5px;border-radius:3px;background:rgba(0,212,255,0.1);color:var(--cyan);border:1px solid rgba(0,212,255,0.2);}
+.a-txt{font-size:10px;color:var(--text);line-height:1.4;flex:1;min-width:0;}
+.play-btn2{flex-shrink:0;background:rgba(0,212,255,0.12);color:var(--cyan);border:1px solid rgba(0,212,255,0.3);border-radius:5px;padding:3px 8px;font-size:9px;cursor:pointer;font-family:'Roboto Mono',monospace;}
+.play-btn2:hover{background:rgba(0,212,255,0.25);}
+/* Scenario */
+select,input[type=text],input[type=number]{background:rgba(0,0,0,0.4);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:7px 10px;width:100%;font-family:'Roboto Mono',monospace;font-size:11px;outline:none;}
+select:focus,input:focus{border-color:var(--cyan);}
+.fields-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+.field-lbl{font-size:9px;letter-spacing:1px;color:var(--dim);margin-bottom:3px;font-family:'Roboto Mono',monospace;}
+.btn-inject{width:100%;padding:10px;background:linear-gradient(135deg,#00d4ff,#006aff);color:#000;border:none;border-radius:8px;font-weight:700;font-size:12px;cursor:pointer;letter-spacing:1px;margin-top:4px;transition:opacity .2s;}
+.btn-inject:hover{opacity:.85;}
+.btn-kill{width:100%;padding:8px;background:rgba(255,71,87,0.12);color:var(--red);border:1px solid rgba(255,71,87,0.3);border-radius:8px;font-size:11px;font-weight:600;cursor:pointer;margin-top:6px;transition:all .2s;font-family:'Roboto Mono',monospace;}
+.btn-kill:hover{background:rgba(255,71,87,0.25);}
+.toast{display:none;background:rgba(0,255,159,0.15);border:1px solid var(--green);border-radius:6px;padding:6px 10px;font-size:10px;color:var(--green);text-align:center;font-family:'Roboto Mono',monospace;}
+/* Intel */
+.cmems-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+.cmems-val{font-size:16px;font-weight:700;color:var(--cyan);font-family:'Roboto Mono',monospace;}
+.contact-row{display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid rgba(0,212,255,0.07);font-size:10px;}
+/* Comms */
+.cmd-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;}
+.cmd-btn{padding:8px 4px;background:rgba(0,212,255,0.08);color:var(--cyan);border:1px solid rgba(0,212,255,0.2);border-radius:7px;font-size:10px;font-weight:600;cursor:pointer;letter-spacing:.5px;transition:all .2s;font-family:'Roboto Mono',monospace;}
+.cmd-btn:hover{background:rgba(0,212,255,0.2);}
+.cmd-btn.danger{background:rgba(255,71,87,0.1);color:var(--red);border-color:rgba(255,71,87,0.3);}
+.cmd-btn.danger:hover{background:rgba(255,71,87,0.25);}
+#mic-btn{width:100%;padding:12px;background:rgba(0,212,255,0.08);color:var(--cyan);border:1px solid rgba(0,212,255,0.25);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Roboto Mono',monospace;}
+#mic-btn.recording{background:rgba(255,71,87,0.2);color:var(--red);border-color:rgba(255,71,87,0.4);animation:pulse 1s infinite;}
+#chat-log{font-size:10px;max-height:100px;overflow-y:auto;}
+.chat-line-user{color:var(--amber);margin:2px 0;}
+.chat-line-ai{color:var(--green);margin:2px 0;}
+/* Map overlays */
+#hud-map-pos{position:absolute;top:10px;left:10px;z-index:10;background:var(--glass);border:1px solid var(--border);border-radius:8px;padding:7px 12px;backdrop-filter:blur(12px);font-family:'Roboto Mono',monospace;font-size:11px;}
+</style>
+</head>
+<body>
+<div id="layout">
+  <div id="map-panel">
+    <div id="map"></div>
+    <div id="hud-map-pos">
+      <span id="mp-sog" style="color:var(--cyan);font-weight:600;">-- kn</span>
+      &nbsp;&nbsp;<span id="mp-hdg" style="color:var(--dim);">HDG --</span>
+      &nbsp;&nbsp;<span id="mp-pos" style="color:var(--dim);font-size:10px;">--</span>
+    </div>
+  </div>
+
+  <div id="side">
+    <!-- Tab bar -->
+    <div class="tabs" style="flex-wrap:wrap;">
+      <div class="tab active" onclick="switchTab('audio')" style="flex:1 0 25%;">AUDIO</div>
+      <div class="tab" onclick="switchTab('scenario')" style="flex:1 0 25%;">SCENARIO</div>
+      <div class="tab" onclick="switchTab('engine')" style="flex:1 0 25%;">ENGINE</div>
+      <div class="tab" onclick="switchTab('env')" style="flex:1 0 25%;">ENV</div>
+      <div class="tab" onclick="switchTab('intel')" style="flex:1 0 25%;">INTEL</div>
+      <div class="tab" onclick="switchTab('comms')" style="flex:1 0 25%;">COMMS</div>
+      <div class="tab" onclick="switchTab('air')" style="flex:1 0 25%;color:#a78bfa;">AIR</div>
+    </div>
+
+    <!-- AUDIO TAB -->
+    <div class="panel active" id="tab-audio">
+      <div id="player-main">
+        <button id="arm-btn-v" onclick="armAudio()">&#x26A1; TAP TO ARM AUTO-PLAY</button>
+        <div id="armed-badge-v">&#x25B6; AUTO-PLAY ARMED &mdash; LIVE MONITORING</div>
+        <div id="now-type">STANDBY</div>
+        <div id="now-text">No briefing playing</div>
+        <audio id="mainAudio" controls></audio>
+      </div>
+      <div class="card">
+        <div class="card-title">Recent briefings</div>
+        <div id="audio-list"><div style="color:var(--dim);font-size:10px;">Loading...</div></div>
+      </div>
+    </div>
+
+    <!-- SCENARIO TAB -->
+    <div class="panel" id="tab-scenario">
+      <div class="card">
+        <div class="card-title">Location Preset</div>
+        <select id="preset-select" onchange="applyPreset()">
+          <option value="">-- SELECT --</option>
+          <optgroup label="AUST/NZ PORTS">
+            <option value="-38.487,145.620">Yaringa Boat Harbour</option>
+            <option value="-38.452,145.237">Cowes Jetty</option>
+            <option value="-33.85,151.27">Sydney Harbour</option>
+            <option value="-12.46,130.82">Darwin Harbour</option>
+            <option value="-32.05,115.73">Fremantle</option>
+            <option value="-20.3,118.57">Port Hedland</option>
+            <option value="-18.28,147.69">Great Barrier Reef</option>
+            <option value="-39.5,145.0">Bass Strait</option>
+            <option value="-42.88,147.32">Hobart</option>
+            <option value="-14.0,139.0">Gulf of Carpentaria</option>
+            <option value="-33.5,130.0">Great Australian Bight</option>
+            <option value="-36.8,174.7">Auckland</option>
+            <option value="-41.2,174.5">Cook Strait</option>
+          </optgroup>
+          <optgroup label="GLOBAL CHOKEPOINTS">
+            <option value="26.56,56.26">Strait of Hormuz</option>
+            <option value="12.58,43.33">Bab el-Mandeb</option>
+            <option value="29.92,32.55">Suez Canal</option>
+            <option value="9.12,-79.73">Panama Canal</option>
+            <option value="1.25,103.83">Strait of Malacca</option>
+            <option value="35.97,-5.5">Strait of Gibraltar</option>
+            <option value="41.0,29.0">Bosphorus Strait</option>
+            <option value="24.5,119.5">Taiwan Strait</option>
+            <option value="50.0,1.0">English Channel</option>
+            <option value="55.7,12.8">Oresund</option>
+            <option value="-53.28,-73.34">Strait of Magellan</option>
+          </optgroup>
+          <optgroup label="HIGH RISK / WAR ZONES">
+            <option value="44.5,33.5">Black Sea</option>
+            <option value="13.0,47.0">Gulf of Aden</option>
+            <option value="10.0,114.0">South China Sea</option>
+            <option value="33.5,34.0">Eastern Mediterranean</option>
+            <option value="46.0,36.5">Sea of Azov</option>
+            <option value="3.0,5.0">Gulf of Guinea</option>
+            <option value="37.0,124.0">Yellow Sea</option>
+            <option value="15.0,65.0">Arabian Sea</option>
+            <option value="5.0,50.0">Somali Basin</option>
+          </optgroup>
+          <optgroup label="HAZARDS & EXTREME WEATHER">
+            <option value="-56.5,-67.2">Cape Horn</option>
+            <option value="-34.8,19.9">Cape of Good Hope</option>
+            <option value="45.5,-5.0">Bay of Biscay</option>
+            <option value="58.0,-175.0">Bering Sea</option>
+            <option value="-45.0,90.0">Southern Ocean</option>
+            <option value="57.0,-145.0">Gulf of Alaska</option>
+            <option value="55.0,3.0">North Sea</option>
+            <option value="58.0,-55.0">Labrador Sea</option>
+            <option value="28.0,-65.0">Sargasso Sea</option>
+            <option value="-40.0,155.0">Tasman Sea</option>
+          </optgroup>
+          <optgroup label="MAJOR WATERWAYS">
+            <option value="25.0,-90.0">Gulf of Mexico</option>
+            <option value="15.0,-75.0">Caribbean Sea</option>
+            <option value="57.0,19.0">Baltic Sea</option>
+            <option value="43.0,15.0">Adriatic Sea</option>
+            <option value="10.0,95.0">Andaman Sea</option>
+            <option value="-15.0,150.0">Coral Sea</option>
+            <option value="65.0,5.0">Norwegian Sea</option>
+            <option value="15.0,130.0">Philippine Sea</option>
+          </optgroup>
+          <option value="custom">Custom Coordinates</option>
+        </select>
+      </div>
+      <div class="card">
+        <div class="card-title">Vessel Position</div>
+        <div class="fields-row">
+          <div><div class="field-lbl">LAT</div><input type="text" id="sc-lat" placeholder="-38.487"/></div>
+          <div><div class="field-lbl">LON</div><input type="text" id="sc-lon" placeholder="145.620"/></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">Scenario Parameters</div>
+        <div class="fields-row">
+          <div><div class="field-lbl">WIND (kn)</div><input type="number" id="sc-wind" placeholder="15"/></div>
+          <div><div class="field-lbl">HDG (&deg;)</div><input type="number" id="sc-hdg" placeholder="270"/></div>
+          <div><div class="field-lbl">SOG (kn)</div><input type="number" id="sc-sog" placeholder="8"/></div>
+          <div><div class="field-lbl">CONDITION</div>
+            <select id="sc-cond"><option value="calm">Calm</option><option value="choppy">Choppy</option><option value="rough">Rough</option><option value="storm">Storm</option></select>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">Current Injected Scenario</div>
+        <div id="current-scenario" style="font-size:10px;color:var(--text);font-family:'Roboto Mono',monospace;line-height:1.6;">Loading...</div>
+      </div>
+      <button class="btn-inject" onclick="injectScenario()">&#x26A1; INJECT SCENARIO</button>
+      <div class="toast" id="inject-toast">&#x2714; SCENARIO INJECTED</div>
+      <button class="btn-kill" onclick="killSim()">&#x26A0; STOP SIMULATOR</button>
+    </div>
+
+    <!-- ENGINE TAB -->
+    <div class="panel" id="tab-engine">
+      <div class="card">
+        <div class="card-title">Propulsion</div>
+        <div class="fields-row">
+          <div><div class="field-lbl">RPM</div><input type="number" id="sc-rpm" value="1200"/></div>
+          <div><div class="field-lbl">FUEL %</div><input type="number" id="sc-fuel" value="95"/></div>
+        </div>
+        <div style="display:flex;gap:6px;margin-top:6px;">
+          <button class="cmd-btn" onclick="document.getElementById('sc-rpm').value=0;document.getElementById('sc-sog').value=8;injectScenario()" style="flex:1;">UNDER SAIL</button>
+          <button class="cmd-btn" onclick="document.getElementById('sc-rpm').value=2200;document.getElementById('sc-sog').value=16;injectScenario()" style="flex:1;">UNDER MOTOR</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">Power Systems</div>
+        <div class="fields-row">
+          <div><div class="field-lbl">BATTERY (V)</div><input type="number" id="sc-bat" value="13.5" step="0.1"/></div>
+        </div>
+      </div>
+      <button class="btn-inject" onclick="injectScenario()">&#x26A1; INJECT STATE</button>
+    </div>
+
+    <!-- ENV TAB -->
+    <div class="panel" id="tab-env">
+      <div class="card">
+        <div class="card-title">Environment Sensors</div>
+        <div class="fields-row">
+          <div><div class="field-lbl">DEPTH (m)</div><input type="number" id="sc-depth" value="45"/></div>
+          <div><div class="field-lbl">EXT TEMP (&deg;C)</div><input type="number" id="sc-out-temp" value="22.5"/></div>
+          <div><div class="field-lbl">ROLL (&deg;)</div><input type="number" id="sc-roll" value="0"/></div>
+        </div>
+      </div>
+      <button class="btn-inject" onclick="injectScenario()">&#x26A1; INJECT STATE</button>
+    </div>
+
+    <!-- INTEL TAB -->
+    <div class="panel" id="tab-intel">
+      <div class="card">
+        <div class="card-title">CMEMS Ocean Data <span id="cmems-badge2" style="margin-left:6px;font-size:9px;padding:1px 5px;border-radius:3px;background:rgba(255,179,0,0.15);color:var(--amber);border:1px solid var(--amber);">UPDATING</span></div>
+        <div class="cmems-grid">
+          <div><div class="field-lbl">Wave H</div><div class="cmems-val" id="i-wave">--</div></div>
+          <div><div class="field-lbl">Swell H</div><div class="cmems-val" id="i-swell">--</div></div>
+          <div><div class="field-lbl">Current</div><div class="cmems-val" id="i-curr">--</div></div>
+          <div><div class="field-lbl">SST</div><div class="cmems-val" id="i-sst">--</div></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">AIS Vessel DB
+          <select id="ais-sel" onchange="aisSelect()" style="margin-top:6px;font-size:10px;">
+            <option value="">-- SELECT VESSEL --</option>
+          </select>
+        </div>
+        <div id="ais-detail" style="display:none;font-size:10px;margin-top:8px;line-height:1.6;color:var(--text);"></div>
+        <button class="cmd-btn" onclick="aisTrack()" style="margin-top:6px;width:100%;">TRACK ON MAP</button>
+      </div>
+      <div class="card">
+        <div class="card-title">Radar Contacts</div>
+        <div id="contact-list" style="font-size:10px;color:var(--dim);">Scanning...</div>
+      </div>
+      <div class="card">
+        <div class="card-title">Sea State Map <button onclick="changeZ(-1)" style="background:none;border:1px solid var(--border);color:var(--dim);padding:1px 5px;border-radius:3px;cursor:pointer;font-size:10px;">-</button> <span id="sz-lbl">4</span> <button onclick="changeZ(1)" style="background:none;border:1px solid var(--border);color:var(--dim);padding:1px 5px;border-radius:3px;cursor:pointer;font-size:10px;">+</button></div>
+        <img id="wave-img" style="width:100%;border-radius:6px;border:1px solid var(--border);margin-top:4px;" src="/wave_map?w=320&h=180&z=4"/>
+      </div>
+      <div class="card">
+        <div class="card-title">AIS Traffic Map <button onclick="changeAZ(-1)" style="background:none;border:1px solid var(--border);color:var(--dim);padding:1px 5px;border-radius:3px;cursor:pointer;font-size:10px;">-</button> <span id="az-lbl">4</span> <button onclick="changeAZ(1)" style="background:none;border:1px solid var(--border);color:var(--dim);padding:1px 5px;border-radius:3px;cursor:pointer;font-size:10px;">+</button></div>
+        <img id="ais-img" style="width:100%;border-radius:6px;border:1px solid var(--border);margin-top:4px;" src="/ais_map?w=320&h=180&z=4"/>
+      </div>
+    </div>
+
+    <!-- COMMS TAB -->
+    <div class="panel" id="tab-comms">
+      <div class="card">
+        <div class="card-title">Voice Command</div>
+        <button id="mic-btn" onmousedown="startRec()" onmouseup="stopRec()" ontouchstart="startRec()" ontouchend="stopRec()">&#x1F3A4; HOLD TO SPEAK</button>
+        <div id="chat-log" style="margin-top:8px;"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Course Override</div>
+        <input type="text" id="dest-in" placeholder="Enter destination or coordinates..."/>
+        <div style="display:flex;gap:6px;margin-top:6px;">
+          <button class="cmd-btn" onclick="setDest()" style="flex:1;">SET COURSE</button>
+          <button class="cmd-btn" onclick="clearRoute()" style="flex:0 0 70px;background:rgba(255,71,87,0.1);color:var(--red);border-color:rgba(255,71,87,0.3);">CLEAR</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">Quick Commands</div>
+        <div class="cmd-grid">
+          <button class="cmd-btn danger" onclick="reqG('MAYDAY')">&#x1F6A8; MAYDAY</button>
+          <button class="cmd-btn" onclick="reqG('DAY_BRIEF')">&#x2600; DAY BRIEF</button>
+          <button class="cmd-btn" onclick="reqG('NIGHT_BRIEF')">&#x1F319; NIGHT BRIEF</button>
+          <button class="cmd-btn" onclick="reqG('WEATHER_SITREP')">&#x26C8; WEATHER</button>
+          <button class="cmd-btn" onclick="reqRoute('ANCHORAGE')">&#x2693; ANCHORAGE</button>
+          <button class="cmd-btn" onclick="reqRoute('PORT')">&#x1F6A2; PORTS</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">Systems</div>
+        <div class="cmd-grid">
+          <button class="cmd-btn" onclick="sysCmd('sys_gen_start')">GEN START</button>
+          <button class="cmd-btn" onclick="sysCmd('sys_gen_stop')">GEN STOP</button>
+          <button class="cmd-btn" onclick="sysCmd('sys_bilge_auto')">BILGE PUMP</button>
+          <button class="cmd-btn" onclick="reqG('ENGAGE_RADAR')">RADAR ON</button>
+          <button class="cmd-btn" onclick="reqG('DISENGAGE_RADAR')">RADAR OFF</button>
+          <button class="cmd-btn" onclick="reqG('ENGAGE_SONAR')">SONAR ON</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Globals Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+let map, vesselMarker, watchMarker, trackPoly, routePoly;
+let lastLat=-38.487, lastLon=145.620;
+let showTrack=true, trackedMmsi=null;
+let autoPlayArmed=false, playedIds=new Set(), audioQueue=[], isPlaying=false;
+let waveZ=4, aisZ=4;
+let mediaRec, audioChunks=[], isRec=false;
+let aisDb={}, aisMarkers={};
+
+
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Tab switching Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+function switchTab(name){
+  document.querySelectorAll('.tab').forEach((t,i)=>{t.classList.remove('active');});
+  document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
+  document.querySelector('.tab[onclick*="'+name+'"]').classList.add('active');
+  document.getElementById('tab-'+name).classList.add('active');
+}
+
+function initMap(){
+  map=L.map('map',{zoomControl:false,attributionControl:false,doubleClickZoom:false});
+  map.setView([lastLat,lastLon],11);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{maxZoom:20}).addTo(map);
+  const vi=L.divIcon({className:'',html:'<div style="font-size:26px;color:#00d4ff;filter:drop-shadow(0 0 5px #00d4ff);line-height:1;">&#x25B2;</div>',iconSize:[26,26],iconAnchor:[13,13]});
+  const wi=L.divIcon({className:'',html:'<div style="width:13px;height:13px;border-radius:50%;background:#00ff9f;border:2px solid #fff;box-shadow:0 0 8px #00ff9f;"></div>',iconSize:[13,13],iconAnchor:[6,6]});
+  vesselMarker=L.marker([lastLat,lastLon],{icon:vi}).addTo(map);
+  watchMarker=L.marker([0,0],{icon:wi}).addTo(map);
+  trackPoly=L.polyline([],{color:'#00d4ff',weight:1.5,opacity:0.5}).addTo(map);
+}
+initMap();
+
+function armAudio(){
+  const ctx=new(window.AudioContext||window.webkitAudioContext)();
+  const b=ctx.createBuffer(1,1,22050); const s=ctx.createBufferSource(); s.buffer=b; s.connect(ctx.destination); s.start(0);
+  autoPlayArmed=true;
+  document.getElementById('arm-btn-v').style.display='none';
+  document.getElementById('armed-badge-v').style.display='block';
+}
+function playNextInQueue(){
+  if(isPlaying||audioQueue.length===0) return;
+  isPlaying=true;
+  const item=audioQueue.shift();
+  const a=document.getElementById('mainAudio');
+  a.src='/audio?id='+item.id+'&bust='+Date.now(); a.load();
+  a.play().then(()=>{
+    const lbl=(item.type||'status').toUpperCase().replace('_',' ');
+    const URGENT=['MAYDAY','SYSTEM STATUS','KINETIC THREAT'];
+    document.getElementById('now-type').style.color=URGENT.includes(lbl)?'#ff4757':'#00d4ff';
+    document.getElementById('now-type').innerText=lbl;
+    document.getElementById('now-text').innerText=item.text?item.text.substring(0,120)+'...':'';
+  }).catch(e=>{isPlaying=false;setTimeout(playNextInQueue,500);});
+  a.onended=()=>{isPlaying=false;setTimeout(playNextInQueue,500);};
+}
+
+let isInit=false;
+async function tick(){
+  try{
+    const d=await(await fetch('/status_api?bust='+Date.now())).json();
+    lastLat=d.lat||lastLat; lastLon=d.lon||lastLon;
+    vesselMarker.setLatLng([lastLat,lastLon]);
+    document.getElementById('mp-pos').innerText=lastLat.toFixed(4)+','+lastLon.toFixed(4);
+    document.getElementById('mp-sog').innerText=(d.sog!=null?(+d.sog).toFixed(1)+' kn':'-- kn');
+    document.getElementById('mp-hdg').innerText='HDG '+(d.heading!=null?Math.round(d.heading)+'&deg;':'--');
+    const wL=d.CREW_LAT||0; if(wL) watchMarker.setLatLng([wL,d.CREW_LON||0]);
+    if(!isInit&&lastLat!==0){
+      const grp=wL?L.featureGroup([vesselMarker,watchMarker]):L.featureGroup([vesselMarker]);
+      try{map.fitBounds(grp.getBounds().pad(0.3),{maxZoom:13});}catch(e){}
+      isInit=true;
+    }
+    // Auto-play queue Ã¢â‚¬â€ newest-first, fresh reports only
+    if(d.audio_history&&autoPlayArmed){
+      const URGENT=['MAYDAY','KINETIC_THREAT','SYSTEM_STATUS'];
+      const MAX_AGE_S=600; const nowSec=Date.now()/1000;
+      const sorted=[...d.audio_history].sort((a,b)=>{
+        const aUr=URGENT.includes((a.type||'').toUpperCase())?1:0;
+        const bUr=URGENT.includes((b.type||'').toUpperCase())?1:0;
+        if(bUr!==aUr) return bUr-aUr;
+        return (b.ts||0)-(a.ts||0);
+      });
+      sorted.forEach(h=>{ if((nowSec-(h.ts||0))>MAX_AGE_S) playedIds.add(h.id); });
+      const newItems=sorted.filter(h=>h.ready!==false&&!playedIds.has(h.id));
+      newItems.forEach(h=>playedIds.add(h.id));
+      if(newItems.length>0){
+        audioQueue.splice(0,0,...newItems);
+        const hasUrgent=newItems.some(h=>URGENT.includes((h.type||'').toUpperCase()));
+        if(hasUrgent&&isPlaying){
+          const curType=(document.getElementById('now-type').innerText||'').replace(' ','_');
+          if(!URGENT.includes(curType)){document.getElementById('mainAudio').pause();isPlaying=false;}
+        }
+      }
+      playNextInQueue();
+    }
+    // Audio history list
+    if(d.audio_history){
+      const rev=[...d.audio_history].reverse();
+      document.getElementById('audio-list').innerHTML=rev.map(h=>{
+        const typeLabel=(h.type||'sys').toUpperCase().replace('_',' ');
+        const txt=h.text?h.text.substring(0,80)+'...':'';
+        const btn=h.ready===false?'<span style="color:var(--amber);font-size:9px;">GENERATING...</span>':
+          '<button class="play-btn2" onclick="manualPlay('+h.id+')">&#x25B6; PLAY</button>';
+        return '<div class="audio-item"><span class="a-type">'+typeLabel+'</span><div class="a-txt">'+txt+'</div>'+btn+'</div>';
+      }).join('');
+    }
+    // Contacts
+    if(d.radar_contacts){
+      updateAisMarkers(d.radar_contacts);
+      populateAis(d.radar_contacts);
+      document.getElementById('contact-list').innerHTML=d.radar_contacts.slice(0,8).map(c=>
+        '<div class="contact-row"><span style="color:var(--cyan);">'+(c.name||'Unknown')+'</span><span style="color:var(--dim);">'+(c.range_nm!=null?c.range_nm.toFixed(1)+' nm':'')+'</span></div>'
+      ).join('')||'<span style="color:var(--dim);">No contacts</span>';
+    }
+    // Current scenario
+    try{const sc=await(await fetch('/scenario')).json();
+      document.getElementById('current-scenario').innerHTML=
+        Object.entries(sc).filter(([k])=>k!=='id').map(([k,v])=>'<div><span style="color:var(--dim);">'+k+':</span> <span style="color:var(--cyan);">'+v+'</span></div>').join('')||'No active scenario';
+    }catch(e){}
+  }catch(e){console.error(e);}
+}
+
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ AIS map markers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// AIS type -> color + symbol map (mirrors classify_vessel Python output)
+const _AIS_COL = {
+  'Cargo':'#c8c8c8','Tanker':'#ff8200','Passenger':'#5080ff','Military':'#ff3c3c',
+  'Law Enforcement':'#6464ff','Fishing':'#00c850','Sailing':'#ffffff','Pleasure Craft':'#00dcdc',
+  'SAR':'#ff3c3c','Pilot':'#00c8ff','Tug':'#ffb300','Medical':'#ffffff','Fire Fighting':'#ff5000',
+  'WIG':'#00c8b4','High Speed':'#00c8ff','Unknown':'#a0a0a0','Other':'#a0a0a0'
+};
+const _AIS_SYM = {
+  'Military':'&#9670;','Law Enforcement':'&#9670;','SAR':'&#43;','Medical':'&#43;',
+  'Fire Fighting':'&#43;','Tanker':'&#9650;','Passenger':'&#9650;','Cargo':'&#9650;',
+  'Sailing':'&#9651;'
+};
+function _makeAisIcon(c){
+  const vt = c.vessel_type || c.type || 'Unknown';
+  const col = _AIS_COL[vt] || '#a0a0a0';
+  const sym = _AIS_SYM[vt] || '&#9679;';
+  const pulse = (vt==='Military'||vt==='Law Enforcement'||vt==='SAR') ?
+    'animation:aisPulse 1.4s ease-in-out infinite;' : 'animation:aisPulse 2.5s ease-in-out infinite;';
+  return L.divIcon({className:'',
+    html:'<div style="width:12px;height:12px;border-radius:50%;background:'+col+
+         ';border:1.5px solid '+col+';box-shadow:0 0 6px '+col+
+         ';display:flex;align-items:center;justify-content:center;font-size:7px;color:#000;font-weight:bold;'+pulse+'">'+(sym==='&#9679;'?'':sym)+'</div>',
+    iconSize:[12,12],iconAnchor:[6,6]});
+}
+function updateAisMarkers(contacts){
+  const seen=new Set();
+  (contacts||[]).forEach(c=>{
+    if(!c.lat||!c.lon) return;
+    const key=String(c.mmsi||c.name||(c.lat+','+c.lon));
+    seen.add(key);
+    const icon=_makeAisIcon(c);
+    if(aisMarkers[key]){
+      aisMarkers[key].setLatLng([c.lat,c.lon]);
+      aisMarkers[key].setIcon(icon);
+    } else {
+      const vt=c.vessel_type||c.type||'Unknown';
+      const col=_AIS_COL[vt]||'#a0a0a0';
+      const m=L.marker([c.lat,c.lon],{icon:icon}).addTo(map);
+      m.bindPopup('<div style="font-family:monospace;font-size:11px;background:#050d1a;color:#c8e6ff;padding:6px 8px;border-radius:4px;">'
+        +'<b style="color:'+col+'">'+(c.name||'Unknown')+'</b><br>'
+        +'<span style="font-size:9px;color:'+col+';background:rgba(0,0,0,0.4);padding:1px 4px;border-radius:2px;">'+vt+'</span><br>'
+        +(c.mmsi?'MMSI: '+c.mmsi+'<br>':'')
+        +(c.speed!=null?'SOG: '+c.speed+' kn<br>':'')
+        +(c.destination?'&#x2192; '+c.destination+'<br>':'')
+        +(c.range_nm?'Range: '+c.range_nm.toFixed(1)+' nm':'')
+        +'</div>');
+      aisMarkers[key]=m;
+    }
+  });
+  Object.keys(aisMarkers).forEach(k=>{if(!seen.has(k)){aisMarkers[k].remove();delete aisMarkers[k];}});
+}
+
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ ADS-B tick Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+let adsbMarkers={};
+async function tickAdsb(){
+  try{
+    const d=await(await fetch('/adsb_contacts')).json();
+    const contacts=d.contacts||[];
+    const age=d.cache_age_s||0;
+    // Update badge
+    const b=document.getElementById('adsb-badge');
+    if(b){
+      b.innerText=contacts.length+' AIRCRAFT'+(age>120?' (STALE)':'');
+      b.style.color=age>120?'var(--amber)':'var(--green)';
+    }
+    // Update list
+    const el=document.getElementById('adsb-list');
+    if(!el) return;
+    if(contacts.length===0){el.innerHTML='<div style="color:var(--dim);font-size:10px;text-align:center;padding:12px;">No aircraft in range</div>';return;}
+    el.innerHTML=contacts.map(c=>{
+      const pri=c.priority||'ROUTINE';
+      const isCrit=pri==='CRITICAL'; const isWatch=pri==='WATCH';
+      const col=isCrit?'var(--red)':isWatch?'var(--amber)':'var(--text)';
+      const bg=isCrit?'rgba(255,71,87,0.12)':isWatch?'rgba(255,179,0,0.08)':'rgba(0,0,0,0.2)';
+      const bdr=isCrit?'rgba(255,71,87,0.5)':isWatch?'rgba(255,179,0,0.4)':'var(--border)';
+      const badge=(isCrit||isWatch||c.squawk)?`<span style="color:${col};font-size:8px;font-weight:bold;background:rgba(255,179,0,0.1);border:1px solid ${col};padding:1px 4px;border-radius:2px;margin-left:3px;">SQK ${c.squawk||'----'} ${pri!=='ROUTINE'?pri:''}</span>`:'';
+      const eta=c.eta_min?`<span style="color:var(--red);font-size:8px;"> ETA ${c.eta_min}min</span>`:'';
+      return `<div style="background:${bg};border:1px solid ${bdr};border-radius:7px;padding:7px 9px;margin-bottom:5px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">
+          <span style="color:${col};font-family:'Roboto Mono',monospace;font-weight:bold;font-size:12px;">&#x2708; ${c.callsign||c.icao||'????'}</span>${badge}${eta}
+          <span style="color:var(--dim);font-size:9px;">${c.country||''}</span>
+        </div>
+        <div style="font-size:9px;color:#888;margin-bottom:2px;">${c.type||'Unknown'}</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:2px;font-size:9px;font-family:'Roboto Mono',monospace;color:var(--dim);">
+          <span>FL${Math.round((c.alt_ft||0)/100)}</span>
+          <span>${c.spd_kts!=null?Math.round(c.spd_kts)+'kts':'-kts'} ${c.track!=null?Math.round(c.track)+'&deg;':''}</span>
+          <span style="color:var(--cyan);">${c.range_nm!=null?c.range_nm+'nm':'--'} @${c.bearing!=null?Math.round(c.bearing)+'&deg;':'--'}</span>
+        </div>
+      </div>`;
+    }).join('');
+    // ADS-B aircraft on map
+    const seen=new Set();
+    const acIcon=L.divIcon({className:'',html:'<div style="font-size:11px;color:#fff;background:rgba(20,0,60,0.88);border:1.5px solid #a78bfa;border-radius:3px;width:20px;height:20px;line-height:18px;text-align:center;box-shadow:0 1px 4px rgba(0,0,0,0.9);">&#x2708;</div>',iconSize:[20,20],iconAnchor:[10,10]});
+    contacts.slice(0,30).forEach(c=>{
+      if(!c.lat||!c.lon||c.on_ground) return;
+      const key=c.icao||c.callsign;
+      seen.add(key);
+      if(adsbMarkers[key]){
+        adsbMarkers[key].setLatLng([c.lat,c.lon]);
+        adsbMarkers[key].setPopupContent(`<div style="font-family:monospace;font-size:11px;background:#050d1a;color:#c8e6ff;padding:8px 10px;border-radius:6px;min-width:160px;"><b style="color:#a78bfa;font-size:13px;">&#x2708; ${c.callsign||c.icao||'???'}</b><br><span style="font-size:9px;color:#aaa;">${c.type||'Unknown'} &bull; ${c.country||''}</span><br><hr style="border-color:rgba(255,255,255,0.1);margin:4px 0;">FL${Math.round((c.alt_ft||0)/100)} &bull; ${c.spd_kts!=null?Math.round(c.spd_kts)+'kts':'?kts'} ${c.track!=null?Math.round(c.track)+'&deg;':''}<br>Range: ${c.range_nm||'?'}nm @ ${c.bearing!=null?Math.round(c.bearing):'?'}&deg;${c.squawk?'<br>Squawk: <b>'+c.squawk+'</b>':''}${c.closing_rate_kts>2?'<br><span style="color:#ff5555;">&#x21D3; Closing '+Math.round(c.closing_rate_kts)+'kts'+( c.eta_min?' ETA '+c.eta_min+'min':'')+'</span>':''}</div>`);
+      } else {
+        const m=L.marker([c.lat,c.lon],{icon:acIcon}).addTo(map);
+        m.bindPopup(`<div style="font-family:monospace;font-size:11px;background:#050d1a;color:#c8e6ff;padding:8px 10px;border-radius:6px;min-width:160px;"><b style="color:#a78bfa;font-size:13px;">&#x2708; ${c.callsign||c.icao||'???'}</b><br><span style="font-size:9px;color:#aaa;">${c.type||'Unknown'} &bull; ${c.country||''}</span><br><hr style="border-color:rgba(255,255,255,0.1);margin:4px 0;">FL${Math.round((c.alt_ft||0)/100)} &bull; ${c.spd_kts!=null?Math.round(c.spd_kts)+'kts':'?kts'} ${c.track!=null?Math.round(c.track)+'&deg;':''}<br>Range: ${c.range_nm||'?'}nm @ ${c.bearing!=null?Math.round(c.bearing):'?'}&deg;${c.squawk?'<br>Squawk: <b>'+c.squawk+'</b>':''}${c.closing_rate_kts>2?'<br><span style="color:#ff5555;">&#x21D3; Closing '+Math.round(c.closing_rate_kts)+'kts'+( c.eta_min?' ETA '+c.eta_min+'min':'')+'</span>':''}</div>`);
+        adsbMarkers[key]=m;
+      }
+    });
+    Object.keys(adsbMarkers).forEach(k=>{if(!seen.has(k)){adsbMarkers[k].remove();delete adsbMarkers[k];}});
+  }catch(e){}
+}
+
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ CMEMS tick Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+async function tickCmems(){
+  try{
+    const d=await(await fetch('/sea_state_json')).json();
+    const f=v=>v&&v!='n/a'?v:'--';
+    document.getElementById('i-wave').innerText=f(d.wave_h);
+    document.getElementById('i-swell').innerText=f(d.swell_h);
+    document.getElementById('i-curr').innerText=f(d.curr_v);
+    document.getElementById('i-sst').innerText=f(d.sst_c);
+    const b=document.getElementById('cmems-badge2');
+    if(d.cmems_stale||d.wave_h==='n/a'){b.style.background='rgba(255,179,0,0.15)';b.style.color='var(--amber)';b.style.borderColor='var(--amber)';b.innerText='UPDATING';}
+    else{b.style.background='rgba(0,255,159,0.12)';b.style.color='var(--green)';b.style.borderColor='var(--green)';b.innerText='LIVE';}
+  }catch(e){}
+}
+
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Track history Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+async function tickTrack(){
+  try{const h=await(await fetch('/history_api')).json(); trackPoly.setLatLngs(h);}catch(e){}
+}
+
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Maps refresh Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+function refreshMaps(){
+  const b=Date.now();
+  document.getElementById('wave-img').src='/wave_map?w=320&h=180&z='+waveZ+'&lat='+lastLat+'&lon='+lastLon+'&bust='+b;
+  document.getElementById('ais-img').src='/ais_map?w=320&h=180&z='+aisZ+'&lat='+lastLat+'&lon='+lastLon+'&bust='+b;
+}
+function changeZ(d){waveZ=Math.max(1,Math.min(9,waveZ+d));document.getElementById('sz-lbl').innerText=waveZ;refreshMaps();}
+function changeAZ(d){aisZ=Math.max(1,Math.min(9,aisZ+d));document.getElementById('az-lbl').innerText=aisZ;refreshMaps();}
+
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ AIS Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+function populateAis(contacts){
+  aisDb={};
+  const sel=document.getElementById('ais-sel');
+  const prev=sel.value;
+  sel.innerHTML='<option value="">-- SELECT VESSEL --</option>';
+  contacts.filter(c=>c.mmsi||c.name).forEach(c=>{
+    const k=c.mmsi||c.id||c.name;
+    aisDb[k]=c;
+    const o=document.createElement('option'); o.value=k;
+    const r=c.range_nm?' | '+c.range_nm.toFixed(1)+'nm':'';
+    o.text=(c.name||'Unknown')+r;
+    sel.appendChild(o);
+  });
+  if(prev&&aisDb[prev]) sel.value=prev;
+}
+function aisSelect(){
+  const k=document.getElementById('ais-sel').value;
+  const box=document.getElementById('ais-detail');
+  if(!k||!aisDb[k]){box.style.display='none';return;}
+  const c=aisDb[k]; box.style.display='block';
+  box.innerHTML=[
+    '<b style="color:var(--cyan);">'+(c.name||'Unknown')+'</b>',
+    c.mmsi?'<div><span style="color:var(--dim);">MMSI:</span> '+c.mmsi+'</div>':'',
+    c.destination?'<div><span style="color:var(--dim);">Dest:</span> <span style="color:var(--amber);">'+c.destination+'</span></div>':'',
+    c.speed!=null?'<div><span style="color:var(--dim);">Speed:</span> '+c.speed+' kn</div>':'',
+    c.range_nm?'<div><span style="color:var(--dim);">Range:</span> '+c.range_nm.toFixed(2)+' nm</div>':''
+  ].join('');
+}
+function aisTrack(){
+  const k=document.getElementById('ais-sel').value;
+  if(!k||!aisDb[k]) return;
+  const c=aisDb[k]; if(c.lat&&c.lon){trackedMmsi=k;map.panTo([c.lat,c.lon]);map.setZoom(12);}
+}
+
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Scenario Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+function applyPreset(){
+  const v=document.getElementById('preset-select').value;
+  if(!v||v==='custom') return;
+  const [lat,lon]=v.split(',');
+  document.getElementById('sc-lat').value=lat;
+  document.getElementById('sc-lon').value=lon;
+}
+async function injectScenario(){
+  const latR = parseFloat(document.getElementById('sc-lat').value)||lastLat;
+  const lonR = parseFloat(document.getElementById('sc-lon').value)||lastLon;
+  const wR = parseFloat(document.getElementById('sc-wind').value)||15;
+  const hdgR = parseFloat(document.getElementById('sc-hdg').value)||270;
+  const sogR = parseFloat(document.getElementById('sc-sog').value)||8;
+  const rpmR = parseFloat(document.getElementById('sc-rpm')?document.getElementById('sc-rpm').value:1200);
+  const fuelR = parseFloat(document.getElementById('sc-fuel')?document.getElementById('sc-fuel').value:95);
+  const batR = parseFloat(document.getElementById('sc-bat')?document.getElementById('sc-bat').value:13.5);
+  const depthR = parseFloat(document.getElementById('sc-depth')?document.getElementById('sc-depth').value:45);
+  const outT = parseFloat(document.getElementById('sc-out-temp')?document.getElementById('sc-out-temp').value:22.5);
+  const rollR = parseFloat(document.getElementById('sc-roll')?document.getElementById('sc-roll').value:0);
+
+  const payload={ lat:latR, lon:lonR, wind_kn:wR, heading:hdgR, sog:sogR, condition:document.getElementById('sc-cond').value||'calm' };
+  const headless_payload = {
+     base_lat:latR, base_lon:lonR, aws_kts:wR, cog_deg:hdgR, sog_kts:sogR,
+     rpm:isNaN(rpmR)?1200:rpmR, fuel_pct:isNaN(fuelR)?95:fuelR, bat_v:isNaN(batR)?13.5:batR, depth_m:isNaN(depthR)?45:depthR, out_temp_c:isNaN(outT)?22.5:outT, roll_deg:isNaN(rollR)?0:rollR
+  };
+  try{
+    await fetch('/update_scenario',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    await fetch('/api/sim_override',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(headless_payload)});
+    const t=document.getElementById('inject-toast'); t.style.display='block';
+    setTimeout(()=>t.style.display='none',2500);
+  }catch(e){alert('Inject failed: '+e);}
+}
+async function killSim(){
+  if(!confirm('Stop the headless simulator? The physical watch will resume control.')) return;
+  await fetch('/kill_sim',{method:'POST'});
+}
+
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Manual audio play Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+function manualPlay(id){
+  const a=document.getElementById('mainAudio');
+  a.src='/audio?id='+id+'&bust='+Date.now(); a.load(); a.play().catch(e=>{});
+  isPlaying=false;
+}
+
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Voice recording Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+async function startRec(){
+  if(isRec) return; isRec=true;
+  const btn=document.getElementById('mic-btn');
+  btn.classList.add('recording'); btn.innerText='Ã°Å¸â€Â´ RECORDING...';
+  try{
+    const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+    mediaRec=new MediaRecorder(stream,{mimeType:'audio/webm'});
+    audioChunks=[];
+    mediaRec.ondataavailable=e=>audioChunks.push(e.data);
+    mediaRec.onstop=()=>{sendVoice();audioChunks=[];isRec=false;};
+    mediaRec.start();
+  }catch(e){isRec=false;btn.classList.remove('recording');btn.innerText='Ã°Å¸Å½Â¤ HOLD TO SPEAK';}
+}
+function stopRec(){
+  if(mediaRec&&mediaRec.state==='recording'){mediaRec.stop();mediaRec.stream.getTracks().forEach(t=>t.stop());}
+  document.getElementById('mic-btn').classList.remove('recording');
+  document.getElementById('mic-btn').innerText='Ã°Å¸Å½Â¤ HOLD TO SPEAK';
+}
+async function sendVoice(){
+  const blob=new Blob(audioChunks,{type:'audio/webm'});
+  const fd=new FormData(); fd.append('audio',blob,'voice.webm'); fd.append('lat',lastLat); fd.append('lon',lastLon);
+  try{
+    const j=await(await fetch('/voice_input',{method:'POST',body:fd})).json();
+    const log=document.getElementById('chat-log');
+    if(j.user_query){const d=document.createElement('div');d.className='chat-line-user';d.innerText='> '+j.user_query;log.prepend(d);}
+    if(j.response){const d=document.createElement('div');d.className='chat-line-ai';d.innerText='< '+j.response;log.prepend(d);}
+  }catch(e){}
+}
+
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Nav commands Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+async function setDest(){
+  const v=document.getElementById('dest-in').value; if(!v) return;
+  await fetch('/set_destination',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({destination:v,lat:lastLat,lon:lastLon})});
+  document.getElementById('dest-in').value='ROUTING...';
+  setTimeout(()=>document.getElementById('dest-in').value='',2000);
+}
+async function clearRoute(){await fetch('/set_destination',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({destination:'CLEAR',lat:lastLat,lon:lastLon})});}
+async function reqG(msg){await fetch('/gemini',{method:'POST',headers:{'Content-Type':'application/json','X-Garmin-Auth':'PYXIS_ACTUAL_77X'},body:JSON.stringify({prompt:msg,lat:lastLat,lon:lastLon})});}
+async function reqRoute(t){await fetch('/gemini',{method:'POST',headers:{'Content-Type':'application/json','X-Garmin-Auth':'PYXIS_ACTUAL_77X'},body:JSON.stringify({prompt:'PULL_NAV_DATA:'+t,lat:lastLat,lon:lastLon})});}
+async function sysCmd(c){await fetch('/gemini',{method:'POST',headers:{'Content-Type':'application/json','X-Garmin-Auth':'PYXIS_ACTUAL_77X'},body:JSON.stringify({prompt:'SYSTEM_CMD:'+c,lat:lastLat,lon:lastLon})});}
+
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Poll loops Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+setInterval(tick,3000); tick();
+setInterval(tickCmems,15000); tickCmems();
+setInterval(tickTrack,10000); tickTrack();
+setInterval(refreshMaps,30000); refreshMaps();
+setInterval(tickAdsb,20000); tickAdsb();
+</script>
+
+<!-- AIR TAB PANEL (must be inside #side, injected before </body> via JS) -->
+<template id="tpl-air">
+  <div class="panel" id="tab-air">
+    <div class="card" style="flex-shrink:0;">
+      <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;">
+        <span>ADS-B AIRSPACE</span>
+        <span id="adsb-badge" style="font-family:'Roboto Mono',monospace;font-size:9px;color:var(--green);">LOADING...</span>
+      </div>
+      <div style="font-size:9px;color:var(--dim);margin-bottom:6px;">OpenSky Network Ã¢â‚¬Â¢ 200nm radius Ã¢â‚¬Â¢ 20s refresh</div>
+    </div>
+    <div id="adsb-list" style="flex:1;overflow-y:auto;"><div style="color:var(--dim);font-size:10px;text-align:center;padding:16px;">Loading aircraft...</div></div>
+  </div>
+</template>
+<script>
+// Inject AIR panel from template into #side
+const airTpl=document.getElementById('tpl-air');
+if(airTpl){document.getElementById('side').appendChild(document.importNode(airTpl.content,true));}
+</script>
+</body>
+</html>

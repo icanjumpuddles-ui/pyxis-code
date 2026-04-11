@@ -1,0 +1,269 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"/>
+<title>PYXIS SENTINEL CACHE MANAGER</title>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Roboto+Mono:wght@400;600&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css"/>
+<style>
+:root{--bg:#050d1a;--glass:rgba(8,20,45,0.88);--border:rgba(0,212,255,0.18);--cyan:#00d4ff;--green:#00ff9f;--amber:#ffb300;--red:#ff4757;--violet:#a78bfa;--orange:#ff8c42;--text:#c8e6ff;--dim:#4a7a9b;}
+*{box-sizing:border-box;margin:0;padding:0;}html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-size:13px;}
+#layout{display:flex;height:100vh;width:100vw;}#map{flex:1;min-width:0;}
+#panel{width:380px;flex-shrink:0;background:var(--glass);border-left:1px solid var(--border);backdrop-filter:blur(18px);display:flex;flex-direction:column;overflow:hidden;}
+#ph{padding:12px 14px 8px;border-bottom:1px solid var(--border);background:rgba(0,0,0,0.35);}
+#ph h1{font-size:11px;font-weight:700;letter-spacing:2.5px;color:var(--orange);font-family:'Roboto Mono',monospace;}
+#ph .sub{font-size:8px;color:var(--dim);letter-spacing:1px;margin-top:2px;}
+#ph .badge{display:inline-block;font-size:7px;background:rgba(255,140,66,0.15);border:1px solid rgba(255,140,66,0.3);color:var(--orange);padding:1px 5px;border-radius:3px;margin-top:4px;font-family:'Roboto Mono',monospace;letter-spacing:1px;}
+#vpos{display:flex;gap:10px;padding:7px 14px;background:rgba(255,140,66,0.04);border-bottom:1px solid var(--border);font-family:'Roboto Mono',monospace;}
+.vpi{display:flex;flex-direction:column;}.vpl{font-size:7px;letter-spacing:1.5px;color:var(--dim);text-transform:uppercase;}.vpv{font-size:10px;color:var(--orange);font-weight:600;}
+#pbody{flex:1;overflow-y:auto;padding:10px;display:flex;flex-direction:column;gap:8px;}
+.card{background:rgba(0,0,0,0.28);border:1px solid var(--border);border-radius:8px;padding:9px;}
+.ctitle{font-size:8px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:7px;font-family:'Roboto Mono',monospace;display:flex;justify-content:space-between;align-items:center;}
+.layer-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px;}
+.lbtn{padding:7px 4px;background:rgba(0,0,0,0.3);border:1px solid var(--border);border-radius:6px;cursor:pointer;text-align:center;transition:all .2s;user-select:none;}
+.lbtn.on{border-color:var(--orange);background:rgba(255,140,66,0.12);}
+.ln{font-size:9px;letter-spacing:1px;font-family:'Roboto Mono',monospace;color:var(--dim);}.lbtn.on .ln{color:var(--orange);}
+.ls{font-size:7px;color:var(--dim);margin-top:1px;}
+.zgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;}
+.zbtn{padding:5px 2px;background:rgba(0,0,0,0.3);border:1px solid var(--border);border-radius:5px;cursor:pointer;text-align:center;transition:all .2s;font-family:'Roboto Mono',monospace;user-select:none;}
+.zz{font-size:10px;font-weight:700;color:var(--text);}.znm{font-size:7px;color:var(--dim);}.zt{font-size:7px;color:var(--dim);margin-top:1px;}
+.zbtn.on{border-color:var(--violet);background:rgba(167,139,250,0.12);}.zbtn.on .zz{color:var(--violet);}
+.zbtn.warn{border-color:var(--amber)!important;}.zbtn.warn .zz{color:var(--amber)!important;}
+.pgrid{display:grid;grid-template-columns:1fr 1fr;gap:5px;}
+.pbtn{padding:7px 3px;background:rgba(0,0,0,0.3);border:1px solid var(--border);border-radius:6px;cursor:pointer;text-align:center;font-size:9px;font-family:'Roboto Mono',monospace;color:var(--text);transition:all .2s;user-select:none;}
+.pbtn:hover{background:rgba(255,140,66,0.08);border-color:rgba(255,140,66,0.35);}
+.pbtn.on{background:rgba(255,140,66,0.12);border-color:var(--orange);color:var(--orange);}
+#draw-btn{width:100%;margin-top:6px;padding:9px;background:rgba(167,139,250,0.08);border:1px solid rgba(167,139,250,0.3);border-radius:7px;color:var(--violet);font-size:10px;font-weight:600;font-family:'Roboto Mono',monospace;cursor:pointer;letter-spacing:1px;transition:all .2s;}
+#draw-btn.on{background:rgba(167,139,250,0.22);border-color:var(--violet);}
+#bbox-info{font-size:8px;font-family:'Roboto Mono',monospace;color:var(--dim);margin-top:5px;line-height:1.7;}
+.cloud-row{display:flex;align-items:center;gap:8px;margin-top:6px;}
+.cloud-lbl{font-size:8px;font-family:'Roboto Mono',monospace;color:var(--dim);white-space:nowrap;}
+#maxcc-sl{flex:1;accent-color:var(--orange);}
+#maxcc-val{font-size:9px;font-family:'Roboto Mono',monospace;color:var(--orange);min-width:28px;text-align:right;}
+.sgrid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;}
+.si{text-align:center;padding:6px;background:rgba(0,0,0,0.2);border-radius:5px;}
+.sn{font-size:15px;font-weight:700;font-family:'Roboto Mono',monospace;color:var(--orange);}
+.sn.warn{color:var(--amber);}.sn.bad{color:var(--red);}
+.sl{font-size:7px;color:var(--dim);letter-spacing:1px;margin-top:1px;}
+#dl-btn{width:100%;padding:11px;background:linear-gradient(135deg,rgba(255,140,66,0.18),rgba(200,80,0,0.18));border:1px solid var(--orange);border-radius:8px;color:var(--orange);font-size:12px;font-weight:700;font-family:'Roboto Mono',monospace;cursor:pointer;letter-spacing:2px;transition:all .2s;}
+#dl-btn:hover:not(:disabled){background:linear-gradient(135deg,rgba(255,140,66,0.32),rgba(200,80,0,0.32));}
+#dl-btn:disabled{opacity:0.38;cursor:not-allowed;}
+#pw{display:none;}.pbb{background:rgba(0,0,0,0.3);border-radius:4px;height:5px;overflow:hidden;margin:5px 0;}
+.pb{height:5px;border-radius:4px;background:linear-gradient(90deg,var(--orange),#ff4500);transition:width .5s;width:0%;}
+.ptxt{display:flex;justify-content:space-between;font-size:8px;font-family:'Roboto Mono',monospace;color:var(--dim);}
+#log{font-size:8px;font-family:'Roboto Mono',monospace;color:var(--dim);max-height:90px;overflow-y:auto;}
+.ll{padding:2px 0;border-bottom:1px solid rgba(255,140,66,0.05);}.ll.ok{color:var(--green);}.ll.err{color:var(--red);}.ll.info{color:var(--orange);}
+#cov-btn{width:100%;padding:8px;background:rgba(0,255,159,0.08);border:1px solid rgba(0,255,159,0.3);border-radius:7px;color:var(--green);font-size:9px;font-weight:600;font-family:'Roboto Mono',monospace;cursor:pointer;letter-spacing:1px;transition:all .2s;margin-top:6px;}
+#cov-btn.on{background:rgba(0,255,159,0.2);border-color:var(--green);}
+.leg{display:flex;gap:6px;margin-top:5px;flex-wrap:wrap;}
+.leg-i{display:flex;align-items:center;gap:3px;font-size:7px;font-family:'Roboto Mono',monospace;color:var(--dim);}
+.leg-sq{width:9px;height:9px;border-radius:2px;}
+</style></head><body>
+<div id="layout"><div id="map"></div>
+<div id="panel">
+<div id="ph">
+  <h1>PYXIS SENTINEL CACHE</h1>
+  <div class="sub">PRE-CACHE SENTINEL-2 SATELLITE IMAGERY FOR OFFLINE USE</div>
+  <div class="badge">COPERNICUS DATA SPACE &bull; S2-L2A &bull; 10m RESOLUTION</div>
+</div>
+<div id="vpos">
+  <div class="vpi"><div class="vpl">VESSEL LAT</div><div class="vpv" id="vlat">--</div></div>
+  <div class="vpi"><div class="vpl">VESSEL LON</div><div class="vpv" id="vlon">--</div></div>
+  <div class="vpi"><div class="vpl">STATUS</div><div class="vpv" id="vstatus" style="color:var(--green)">READY</div></div>
+</div>
+<div id="pbody">
+
+<div class="card"><div class="ctitle">Image Layer</div>
+<div class="layer-grid" id="lgrid"></div></div>
+
+<div class="card"><div class="ctitle"><span>Zoom Levels</span><span id="zsummary" style="color:var(--violet);font-size:7px;">z10 z11 z12</span></div>
+<div class="zgrid" id="zgrid"></div></div>
+
+<div class="card"><div class="ctitle">Cloud Cover Filter</div>
+<div class="cloud-row">
+  <span class="cloud-lbl">MAX CLOUD</span>
+  <input type="range" id="maxcc-sl" min="5" max="100" value="20" oninput="updateMaxcc()"/>
+  <span id="maxcc-val">20%</span>
+</div>
+<div style="font-size:7px;color:var(--dim);margin-top:4px;font-family:'Roboto Mono',monospace;">Lower = clearer images. Tiles skipped if clouds exceed threshold.</div>
+</div>
+
+<div class="card"><div class="ctitle">Live Preview & Coverage</div>
+<button id="sat-prev-btn" onclick="toggleSatPreview()" style="width:100%;padding:8px;background:rgba(255,140,66,0.08);border:1px solid rgba(255,140,66,0.3);border-radius:7px;color:var(--orange);font-size:9px;font-weight:600;font-family:'Roboto Mono',monospace;cursor:pointer;letter-spacing:1px;transition:all .2s;margin-bottom:6px;">PREVIEW LIVE SATELLITE</button>
+<div style="font-size:7px;color:var(--dim);font-family:'Roboto Mono',monospace;margin-bottom:6px;">Streams live Sentinel-2 directly on map. Uses free-tier quota.</div>
+<button id="cov-btn" onclick="toggleCoverage()">SHOW CACHED TILE COVERAGE</button>
+<div class="leg">
+  <div class="leg-i"><div class="leg-sq" style="background:#00ff9f"></div>CACHED (FRESH)</div>
+  <div class="leg-i"><div class="leg-sq" style="background:#ffb300"></div>STALE (>14d)</div>
+  <div class="leg-i"><div class="leg-sq" style="background:#00aaff"></div>GDRIVE</div>
+  <div class="leg-i"><div class="leg-sq" style="background:rgba(255,71,87,0.6)"></div>MISSING</div>
+</div>
+<div id="cov-status" style="font-size:7px;font-family:Roboto Mono,monospace;color:var(--dim);margin-top:4px;"></div>
+</div>
+
+<div class="card"><div class="ctitle">Coverage Area</div>
+<div class="pgrid">
+  <div class="pbtn" onclick="setRadius(10,this)">VESSEL +10nm</div>
+  <div class="pbtn" onclick="setRadius(25,this)">VESSEL +25nm</div>
+  <div class="pbtn" onclick="setRadius(50,this)">VESSEL +50nm</div>
+  <div class="pbtn" onclick="setRadius(100,this)">VESSEL +100nm</div>
+</div>
+<button id="draw-btn" onclick="toggleDraw()">DRAW RECTANGLE ON MAP</button>
+<div id="bbox-info">No area selected.</div></div>
+
+<div class="card"><div class="ctitle">Estimate</div><div class="sgrid">
+<div class="si"><div class="sn" id="stiles">0</div><div class="sl">TILES</div></div>
+<div class="si"><div class="sn" id="smb">0</div><div class="sl">EST. MB</div></div>
+<div class="si"><div class="sn" id="seta">--</div><div class="sl">EST. MIN</div></div>
+</div>
+<div style="font-size:7px;color:var(--dim);margin-top:5px;font-family:'Roboto Mono',monospace;">1 req/sec rate limit (free tier). Large areas may take hours. Already-cached tiles are skipped.</div>
+</div>
+
+<button id="dl-btn" onclick="startDL()" disabled>SELECT AREA FIRST</button>
+<div id="pw"><div class="card"><div class="ctitle"><span>Downloading</span><span id="ppct" style="color:var(--orange)">0%</span></div>
+<div class="pbb"><div class="pb" id="pbar"></div></div>
+<div class="ptxt"><span id="pdone">0 / 0 tiles</span><span id="pskip" style="color:var(--dim)"></span><span id="perrs" style="color:var(--red)"></span></div>
+</div></div>
+
+<div class="card"><div class="ctitle">Job Log</div><div id="log"><div class="ll ok">Sentinel cache manager ready.</div></div></div>
+</div></div></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
+<script>
+var vLat={{ lat }},vLon={{ lon }},bbox=null,drawing=false,pollT=null,selRect=null;
+var activeLayer='TRUE_COLOR',zooms=new Set([10,11,12]);
+var LAYERS=[
+  {id:'TRUE_COLOR',   name:'TRUE COLOR',   desc:'Natural RGB'},
+  {id:'AGRICULTURE',  name:'AGRICULTURE',  desc:'Crop analysis'},
+  {id:'BATHYMETRIC',  name:'BATHYMETRIC',  desc:'Coastal depth'},
+  {id:'COLOR_INFRARED',name:'NIR',         desc:'Vegetation health'},
+  {id:'GEOLOGY',      name:'GEOLOGY',      desc:'Rock/sediment'},
+  {id:'MOISTURE_INDEX',name:'MOISTURE',    desc:'Water content'},
+];
+var ZMETA={8:{nm:'200nm'},9:{nm:'100nm'},10:{nm:'50nm'},11:{nm:'25nm'},12:{nm:'12nm'},13:{nm:'6nm',warn:true},14:{nm:'3nm',warn:true}};
+
+var SH_WMS='https://sh.dataspace.copernicus.eu/ogc/wms/7ba55959-6207-4d1f-9ee7-f418f901bf08';
+var map=L.map('map',{zoomControl:true,attributionControl:false}).setView([vLat,vLon],10);
+var cartoDB=L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{maxZoom:20}).addTo(map);
+L.tileLayer('https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png',{maxZoom:18,opacity:0.5}).addTo(map);
+var sentinelWMS=null, satOn=false;
+function buildSentinelWMS(layer,maxcc){
+  return L.tileLayer.wms(SH_WMS,{layers:layer,format:'image/jpeg',transparent:false,version:'1.3.0',crs:L.CRS.EPSG4326,maxcc:maxcc||20,attribution:'Copernicus/ESA'});
+}
+var vi=L.divIcon({className:'',html:'<div style="font-size:20px;color:#ff8c42;filter:drop-shadow(0 0 5px #ff8c42);line-height:1;">&#9650;</div>',iconSize:[20,20],iconAnchor:[10,10]});
+var vMark=L.marker([vLat,vLon],{icon:vi}).addTo(map);
+var dI=new L.FeatureGroup();map.addLayer(dI);
+var dC=new L.Control.Draw({draw:{rectangle:{shapeOptions:{color:'#ff8c42',fillColor:'rgba(255,140,66,0.1)',weight:2}},polyline:false,polygon:false,circle:false,marker:false,circlemarker:false},edit:{featureGroup:dI}});
+map.on(L.Draw.Event.CREATED,function(e){dI.clearLayers();dI.addLayer(e.layer);var b=e.layer.getBounds();setBbox({N:b.getNorth(),S:b.getSouth(),E:b.getEast(),W:b.getWest()});drawing=false;var db=document.getElementById('draw-btn');db.classList.remove('on');db.textContent='DRAW RECTANGLE ON MAP';});
+function toggleSatPreview(){
+  var btn=document.getElementById('sat-prev-btn');
+  if(satOn){
+    if(sentinelWMS){map.removeLayer(sentinelWMS);sentinelWMS=null;}
+    satOn=false;btn.classList.remove('on');btn.textContent='PREVIEW LIVE SATELLITE';
+  }else{
+    var maxcc=parseInt(document.getElementById('maxcc-sl').value)||20;
+    sentinelWMS=buildSentinelWMS(activeLayer,maxcc).addTo(map);
+    satOn=true;btn.classList.add('on');btn.textContent='HIDE SATELLITE PREVIEW';
+    addLog('Live '+activeLayer+' layer on (uses free tier quota)','info');
+  }
+}
+function refreshSatPreview(){
+  if(!satOn)return;
+  if(sentinelWMS){map.removeLayer(sentinelWMS);sentinelWMS=null;}
+  var maxcc=parseInt(document.getElementById('maxcc-sl').value)||20;
+  sentinelWMS=buildSentinelWMS(activeLayer,maxcc).addTo(map);
+}
+
+function buildLayers(){
+  var g=document.getElementById('lgrid');g.innerHTML='';
+  LAYERS.forEach(function(l){
+    var d=document.createElement('div');
+    d.className='lbtn'+(l.id===activeLayer?' on':'');
+    d.innerHTML='<div class="ln">'+l.name+'</div><div class="ls">'+l.desc+'</div>';
+    d.onclick=function(){activeLayer=l.id;document.querySelectorAll('.lbtn').forEach(function(e){e.classList.remove('on');});d.classList.add('on');addLog('Layer: '+l.name,'info');updateStats();refreshSatPreview();};
+    g.appendChild(d);
+  });
+}
+function buildZooms(){
+  var g=document.getElementById('zgrid');g.innerHTML='';
+  Object.keys(ZMETA).forEach(function(z){
+    var zi=parseInt(z),m=ZMETA[z],d=document.createElement('div');
+    d.className='zbtn'+(zooms.has(zi)?' on':'')+(m.warn?' warn':'');
+    d.id='zb'+z;
+    d.innerHTML='<div class="zz">z='+z+'</div><div class="znm">'+m.nm+'</div><div class="zt" id="zt'+z+'">-- t</div>';
+    if(m.warn)d.title='Warning: high tile count, takes long at 1 req/sec';
+    d.onclick=function(){toggleZ(zi);};
+    g.appendChild(d);
+  });
+  updateStats();
+}
+function toggleZ(z){if(zooms.has(z))zooms.delete(z);else zooms.add(z);var el=document.getElementById('zb'+z);if(el)el.className='zbtn'+(zooms.has(z)?' on':'')+(ZMETA[z].warn?' warn':'');document.getElementById('zsummary').textContent=Array.from(zooms).sort().map(function(z){return'z'+z;}).join(' ')||'none';updateStats();}
+function updateMaxcc(){var v=document.getElementById('maxcc-sl').value;document.getElementById('maxcc-val').textContent=v+'%';}
+function tc(N,S,E,W,z){var n=Math.pow(2,z),lo=function(l){return Math.floor((l+180)/360*n);},la=function(a){var r=a*Math.PI/180;return Math.floor((1-Math.log(Math.tan(r)+1/Math.cos(r))/Math.PI)/2*n);};return(Math.abs(lo(E)-lo(W))+1)*(Math.abs(la(N)-la(S))+1);}
+function updateStats(){
+  if(!bbox){resetStats();return;}
+  var tot=0;
+  zooms.forEach(function(z){var t=tc(bbox.N,bbox.S,bbox.E,bbox.W,z);tot+=t;var el=document.getElementById('zt'+z);if(el)el.textContent=t>0?t+' t':'-- t';});
+  Object.keys(ZMETA).forEach(function(z){if(!zooms.has(parseInt(z))){var el=document.getElementById('zt'+z);if(el)el.textContent='-- t';}});
+  var mb=(tot*15/1024).toFixed(1),eta=(tot/60).toFixed(0);
+  document.getElementById('stiles').textContent=tot.toLocaleString();
+  document.getElementById('smb').textContent=mb;
+  document.getElementById('seta').textContent=eta;
+  var db=document.getElementById('dl-btn'),ok=tot>0&&zooms.size>0;
+  db.disabled=!ok;db.textContent=ok?'CACHE '+tot.toLocaleString()+' TILES':'SELECT AREA FIRST';
+}
+function resetStats(){document.getElementById('stiles').textContent='0';document.getElementById('smb').textContent='0';document.getElementById('seta').textContent='--';document.getElementById('dl-btn').disabled=true;document.getElementById('dl-btn').textContent='SELECT AREA FIRST';Object.keys(ZMETA).forEach(function(z){var el=document.getElementById('zt'+z);if(el)el.textContent='-- t';});}
+function setBbox(b){bbox=b;document.getElementById('bbox-info').innerHTML='<span style="color:#aaa">N </span><b style="color:var(--orange)">'+b.N.toFixed(4)+'</b>  <span style="color:#aaa">S </span><b style="color:var(--orange)">'+b.S.toFixed(4)+'</b>  <span style="color:#aaa">E </span><b style="color:var(--orange)">'+b.E.toFixed(4)+'</b>  <span style="color:#aaa">W </span><b style="color:var(--orange)">'+b.W.toFixed(4)+'</b>';updateStats();}
+function setRadius(nm,el){var deg=nm/60,ld=deg/Math.cos(vLat*Math.PI/180),b={N:vLat+deg,S:vLat-deg,E:vLon+ld,W:vLon-ld};dI.clearLayers();if(selRect)map.removeLayer(selRect);selRect=L.rectangle([[b.S,b.W],[b.N,b.E]],{color:'#ff8c42',fillColor:'rgba(255,140,66,0.08)',weight:2}).addTo(map);map.fitBounds([[b.S,b.W],[b.N,b.E]],{padding:[20,20]});document.querySelectorAll('.pbtn').forEach(function(e){e.classList.remove('on');});el.classList.add('on');setBbox(b);addLog('Area: vessel +'+nm+'nm','info');}
+function toggleDraw(){if(drawing){map.removeControl(dC);drawing=false;var db=document.getElementById('draw-btn');db.classList.remove('on');db.textContent='DRAW RECTANGLE ON MAP';}else{map.addControl(dC);new L.Draw.Rectangle(map,dC.options.draw.rectangle).enable();drawing=true;var db=document.getElementById('draw-btn');db.classList.add('on');db.textContent='DRAG TO SELECT AREA...';document.querySelectorAll('.pbtn').forEach(function(e){e.classList.remove('on');});}}
+async function startDL(){
+  if(!bbox||!zooms.size)return;
+  var zs=Array.from(zooms).sort(),maxcc=parseInt(document.getElementById('maxcc-sl').value);
+  document.getElementById('dl-btn').disabled=true;document.getElementById('pw').style.display='block';
+  addLog('Starting: '+activeLayer+' z='+zs.join(',')+' MAXCC='+maxcc+'%','info');
+  try{
+    var r=await fetch('/fetch_sentinel_region',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Basic '+btoa('admin:manta')},body:JSON.stringify({bbox:{N:+bbox.N,S:+bbox.S,E:+bbox.E,W:+bbox.W},zooms:zs,layer:activeLayer,maxcc:maxcc})});
+    var d=await r.json();addLog('Job '+d.job_id+' queued','info');
+    pollT=setInterval(function(){pollJob(d.job_id);},1500);
+  }catch(e){addLog('ERROR: '+e,'err');document.getElementById('dl-btn').disabled=false;}
+}
+async function pollJob(id){
+  try{
+    var r=await fetch('/sentinel_job_status/'+id,{headers:{'Authorization':'Basic '+btoa('admin:manta')}});
+    var d=await r.json();
+    var tot=d.total||1,done=d.done+d.skipped,p=Math.round(done/tot*100);
+    document.getElementById('pbar').style.width=p+'%';document.getElementById('ppct').textContent=p+'%';
+    document.getElementById('pdone').textContent=d.done+' fetched / '+tot+' total';
+    document.getElementById('pskip').textContent=d.skipped?' ('+d.skipped+' cached)':'';
+    if(d.errors>0)document.getElementById('perrs').textContent=d.errors+' err';
+    if(d.status==='done'){clearInterval(pollT);addLog('Done: '+d.done+' fetched, '+d.skipped+' skipped, '+d.errors+' errors',d.errors===0?'ok':'err');document.getElementById('dl-btn').disabled=false;document.getElementById('dl-btn').textContent='CACHE MORE';}
+  }catch(e){}
+}
+async function fetchVessel(){try{var r=await fetch('/status_api?bust='+Date.now());var d=await r.json();if(d.lat&&d.lat!==0){vLat=d.lat;vLon=d.lon;}vMark.setLatLng([vLat,vLon]);document.getElementById('vlat').textContent=vLat.toFixed(4);document.getElementById('vlon').textContent=vLon.toFixed(4);}catch(e){}}
+function addLog(msg,cls){var el=document.createElement('div');el.className='ll '+(cls||'');el.textContent=new Date().toTimeString().slice(0,8)+' '+msg;var l=document.getElementById('log');l.insertBefore(el,l.firstChild);if(l.children.length>20)l.removeChild(l.lastChild);}
+var covLayers=[],covOn=false;
+var COV_COLORS={fresh:'rgba(0,255,159,0.25)',stale:'rgba(255,179,0,0.3)',gdrive:'rgba(0,170,255,0.25)',missing:'rgba(255,71,87,0.18)'};
+var COV_BORDERS={fresh:'#00ff9f',stale:'#ffb300',gdrive:'#00aaff',missing:'rgba(255,71,87,0.7)'};
+async function toggleCoverage(){
+  covOn=!covOn;var btn=document.getElementById('cov-btn');
+  covLayers.forEach(function(l){map.removeLayer(l);});covLayers=[];
+  if(!covOn){btn.classList.remove('on');btn.textContent='SHOW SENTINEL COVERAGE';document.getElementById('cov-status').textContent='';return;}
+  btn.classList.add('on');btn.textContent='LOADING...';document.getElementById('cov-status').textContent='Scanning sentinel tile cache...';
+  try{
+    var zs=[10,11,12],nm=25;
+    var url='/sentinel_cache_coverage?lat='+vLat+'&lon='+vLon+'&nm='+nm+'&zooms='+zs.join(',')+'&bust='+Date.now();
+    var r=await fetch(url,{headers:{'Authorization':'Basic '+btoa('admin:manta')}});var d=await r.json();
+    if(d.error){document.getElementById('cov-status').textContent='Error: '+d.error;covOn=false;btn.classList.remove('on');btn.textContent='SHOW SENTINEL COVERAGE';return;}
+    var cnt={fresh:0,stale:0,gdrive:0,missing:0};
+    d.tiles.forEach(function(t){
+      var rect=L.rectangle([[t.lat_s,t.lon_w],[t.lat_n,t.lon_e]],{color:COV_BORDERS[t.status]||'#888',fillColor:COV_COLORS[t.status]||'rgba(128,128,128,0.15)',weight:0.5,fillOpacity:1,interactive:false});
+      rect.addTo(map);covLayers.push(rect);cnt[t.status]=(cnt[t.status]||0)+1;
+    });
+    document.getElementById('cov-status').textContent='Fresh:'+cnt.fresh+' Stale:'+cnt.stale+' GD:'+cnt.gdrive+' Miss:'+cnt.missing;
+    btn.textContent='HIDE COVERAGE ('+d.total+' tiles)';
+    addLog('Coverage: '+d.total+' tiles at '+nm+'nm','info');
+  }catch(e){document.getElementById('cov-status').textContent='Error: '+e;covOn=false;btn.classList.remove('on');btn.textContent='SHOW SENTINEL COVERAGE';}
+}
+buildLayers();buildZooms();fetchVessel();setInterval(fetchVessel,10000);
+</script></body></html>

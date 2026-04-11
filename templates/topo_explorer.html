@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Pyxis Topo Explorer</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+body{background:#080c10;color:#c8ffd4;font-family:'Share Tech Mono',monospace;height:100vh;display:flex;flex-direction:column;overflow:hidden;}
+header{background:rgba(0,255,100,0.07);border-bottom:1px solid rgba(0,255,100,0.18);padding:10px 20px;display:flex;align-items:center;gap:16px;flex-shrink:0;}
+h1{font-family:'Rajdhani',sans-serif;font-size:1.3rem;font-weight:700;color:#00ff88;letter-spacing:4px;text-transform:uppercase;}
+.tag{font-size:.65rem;color:#4aff90;opacity:.7;}
+.main{display:flex;flex:1;overflow:hidden;}
+#map{flex:1.3;height:100%;}
+#topo-panel{width:510px;flex-shrink:0;background:rgba(0,20,10,0.95);border-left:1px solid rgba(0,255,100,0.15);display:flex;flex-direction:column;}
+.topo-hdr{padding:12px 16px;border-bottom:1px solid rgba(0,255,100,0.15);background:rgba(0,255,100,0.05);}
+.topo-hdr h2{font-family:'Rajdhani',sans-serif;font-size:1rem;font-weight:600;color:#00ff88;letter-spacing:3px;}
+#coord-display{font-size:.72rem;color:#4aff90;margin-top:3px;opacity:.85;}
+.zoom-bar{padding:10px 16px;border-bottom:1px solid rgba(0,255,100,0.1);display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+.zoom-bar span{font-size:.68rem;color:#4aff90;opacity:.7;margin-right:2px;}
+.zb{background:rgba(0,255,100,0.08);border:1px solid rgba(0,255,100,0.25);color:#00ff88;padding:4px 9px;font-family:'Share Tech Mono',monospace;font-size:.68rem;cursor:pointer;border-radius:3px;transition:.15s;}
+.zb:hover{background:rgba(0,255,100,0.22);border-color:#00ff88;}
+.zb.active{background:rgba(0,255,100,0.28);border-color:#00ff88;color:#fff;font-weight:bold;}
+.vessel-btn{background:rgba(0,150,255,0.1);border:1px solid rgba(0,150,255,0.35);color:#4aadff;padding:4px 10px;font-family:'Share Tech Mono',monospace;font-size:.68rem;cursor:pointer;border-radius:3px;transition:.15s;margin-left:auto;}
+.vessel-btn:hover{background:rgba(0,150,255,0.22);}
+#img-wrap{flex:1;display:flex;align-items:center;justify-content:center;padding:14px;overflow:hidden;position:relative;background:radial-gradient(ellipse at center,#0a1a0e 0%,#050d08 100%);}
+#topo-img{max-width:100%;max-height:100%;border:1px solid rgba(0,255,100,0.2);border-radius:4px;display:none;}
+#status{position:absolute;text-align:center;pointer-events:none;}
+.idle{color:#4aff90;opacity:.45;font-size:.8rem;}
+.loading{color:#00ff88;font-size:.82rem;animation:pulse 1s infinite;}
+.err{color:#ff4444;font-size:.78rem;}
+@keyframes pulse{0%,100%{opacity:.55}50%{opacity:1}}
+.scale-tag{font-size:.65rem;color:#00cc66;padding:5px 16px;border-top:1px solid rgba(0,255,100,0.08);text-align:center;opacity:.8;}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>&#9651; PYXIS TOPO EXPLORER</h1>
+    <div class="tag">TOPOGRAPHIC RECONNAISSANCE &bull; CLICK MAP TO PLACE MARKER &bull; USE ZOOM CONTROLS TO CHANGE SCALE</div>
+  </div>
+</header>
+<div class="main">
+  <div id="map"></div>
+  <div id="topo-panel">
+    <div class="topo-hdr">
+      <h2>TOPO RENDER</h2>
+      <div id="coord-display">Click map to select position</div>
+    </div>
+    <div class="zoom-bar">
+      <span>ZOOM:</span>
+      <button class="zb" onclick="setZ(10)">z10 ~10nm</button>
+      <button class="zb" onclick="setZ(11)">z11 ~5nm</button>
+      <button class="zb active" onclick="setZ(12)">z12 ~2nm</button>
+      <button class="zb" onclick="setZ(13)">z13 ~1nm</button>
+      <button class="zb" onclick="setZ(14)">z14 ~0.5nm</button>
+      <button class="zb" onclick="setZ(15)">z15 ~0.2nm</button>
+      <button class="vessel-btn" onclick="goVessel()">&#9654; VESSEL</button>
+    </div>
+    <div id="img-wrap">
+      <img id="topo-img" alt="Topo">
+      <div id="status"><div class="idle">&#9651; SELECT A POSITION ON THE MAP</div></div>
+    </div>
+    <div class="scale-tag" id="scale-tag">&mdash;</div>
+  </div>
+</div>
+<script>
+var VL={{ vlat }}, VN={{ vlon }};
+var cLat=null, cLon=null, cZ=12, mk=null;
+var scales={10:'~10nm view',11:'~5nm view',12:'~2nm view',13:'~1nm view',14:'~0.5nm view',15:'~0.2nm view'};
+
+var map = L.map('map').setView([-25.5,133.7],5);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',{maxZoom:18}).addTo(map);
+
+var vIcon=L.divIcon({className:'',html:'<div style="width:13px;height:13px;background:#00aaff;border:2px solid #fff;border-radius:50%;box-shadow:0 0 8px #00aaff80"></div>',iconSize:[13,13],iconAnchor:[6,6]});
+L.marker([VL,VN],{icon:vIcon}).addTo(map).bindPopup('<b style="color:#00ff88">PYXIS</b><br>'+VL+', '+VN);
+
+var rIcon=L.divIcon({className:'',html:'<div style="width:15px;height:15px;background:#ff3333;border:2px solid #fff;border-radius:50%;box-shadow:0 0 10px #ff333380"></div>',iconSize:[15,15],iconAnchor:[7,7]});
+
+map.on('click',function(e){
+  place(parseFloat(e.latlng.lat.toFixed(5)),parseFloat(e.latlng.lng.toFixed(5)));
+});
+
+function place(lat,lon){
+  cLat=lat; cLon=lon;
+  if(mk)map.removeLayer(mk);
+  mk=L.marker([lat,lon],{icon:rIcon}).addTo(map);
+  document.getElementById('coord-display').textContent='LAT '+lat.toFixed(5)+'\u00b0   LON '+lon.toFixed(5)+'\u00b0';
+  fetch_topo();
+}
+
+function setZ(z){
+  cZ=z;
+  document.querySelectorAll('.zb').forEach(function(b){b.classList.toggle('active',b.textContent.startsWith('z'+z));});
+  if(cLat!==null)fetch_topo();
+}
+
+function goVessel(){map.setView([VL,VN],8);place(VL,VN);}
+
+function fetch_topo(){
+  if(cLat===null)return;
+  var img=document.getElementById('topo-img');
+  img.style.display='none';
+  document.getElementById('status').innerHTML='<div class="loading">&#9651; RENDERING TOPOGRAPHIC DATA...</div>';
+  document.getElementById('scale-tag').textContent='\u2014';
+  var url='/topo_map/'+Date.now()+'/topo.jpg?z='+cZ+'&lat='+cLat+'&lon='+cLon+'&w=460&h=460';
+  img.onload=function(){img.style.display='block';document.getElementById('status').innerHTML='';document.getElementById('scale-tag').textContent=scales[cZ]||'';};
+  img.onerror=function(){document.getElementById('status').innerHTML='<div class="err">&#9651; RENDER FAILED \u2014 CHECK PROXY LOGS</div>';};
+  img.src=url;
+}
+</script>
+</body>
+</html>
