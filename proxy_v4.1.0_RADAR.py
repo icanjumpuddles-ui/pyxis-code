@@ -111,6 +111,10 @@ def intercept_crew_gps():
 
 load_dotenv(os.path.join(B, ".env"), override=True)
 DB, DT, SIM, AN = os.path.join(B, "pyxis_logs.db"), os.path.join(B, "latest_sector.json"), os.path.join(B, "sim_telemetry.json"), os.path.join(B, "anchor_state.json")
+
+from state_manager import PyxisState
+pyxis_state = PyxisState(SIM, DT)
+
 ROUTE_FILE = os.path.join(B, "active_route.json")
 GMDSS_CACHE_FILE = os.path.join(B, "gmdss_cache.json")
 SWPC_CACHE_FILE = os.path.join(B, "swpc_cache.json")
@@ -2006,8 +2010,7 @@ def sim_in():
     if bLat != 0.0 and bLon != 0.0:
         onboard = False
         try:
-            if os.path.exists(DT):
-                with open(DT,"r") as f: onboard = json.load(f).get("onboard_mode", False)
+            onboard = pyxis_state.get_state("DT").get("onboard_mode", False)
         except: pass
         if not onboard:
             payload["lat"] = bLat
@@ -2034,7 +2037,7 @@ def sim_in():
                 task_queue.put(("systems", c['lat'], c['lon'], report_txt))
                 
     payload.pop("audio_history", None)
-    with open(SIM, "w") as f: json.dump(payload, f)
+    pyxis_state.update_state("SIM", payload, replace=True)
     return "OK", 200
 
 @app.route('/adsb_contacts')
@@ -2795,17 +2798,12 @@ def handle_telem():
             if "BOAT_LAT" in payload: payload["lat"] = payload.pop("BOAT_LAT")
             if "BOAT_LON" in payload: payload["lon"] = payload.pop("BOAT_LON")
             payload["last_sim_update"] = time.time()
-            existing = {}
-            if os.path.exists(SIM):
-                try:
-                    with open(SIM, "r") as f: existing = json.load(f)
-                except: pass
-            existing.update(payload)
-            with open(SIM, "w") as f: json.dump(existing, f)
+            pyxis_state.update_state("SIM", payload)
+            existing = pyxis_state.get_state("SIM")
             # Write last_pos.json for external workers (e.g. adsb_worker)
             try:
-                lat_v = payload.get("lat") or existing.get("lat")
-                lon_v = payload.get("lon") or existing.get("lon")
+                lat_v = existing.get("lat")
+                lon_v = existing.get("lon")
                 if lat_v is not None and lon_v is not None:
                     pos_file = os.path.join(B, "last_pos.json")
                     with open(pos_file, "w") as pf:
@@ -2816,15 +2814,9 @@ def handle_telem():
             return jsonify({"error": str(e)}), 500
             
     try:
-        d = {}
-        if os.path.exists(DT):
-            try:
-                with open(DT,"r") as f: d=json.load(f)
-            except: pass
-        if os.path.exists(SIM):
-            try:
-                with open(SIM,"r") as f: s=json.load(f); d.update(s)
-            except: pass
+        d = pyxis_state.get_state("DT")
+        s = pyxis_state.get_state("SIM")
+        d.update(s)
         return jsonify(d)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -2928,11 +2920,8 @@ def st_api():
     """
     try:
         global last_known_lat, last_known_lon
-        d = {}
-        if os.path.exists(DT):
-            try: 
-                with open(DT,"r") as f: d=json.load(f)
-            except: pass
+
+        d = pyxis_state.get_state("DT")
             
         # UI OVERRIDE: Lock GPS to Captain's Watch
         if d.get("onboard_mode", False):
@@ -2941,41 +2930,33 @@ def st_api():
             last_known_lat = d["lat"]
             last_known_lon = d["lon"]
         
-        if os.path.exists(SIM):
-            try:
-                # MANDATORY FAST-READ FALLBACK:
-                # headless_sim.py writes to this JSON thousands of times per minute.
-                # These try/except blocks prevent 'JSONDecodeError: Extra data' from silently
-                # crashing the status_api thread mid-collision and dropping the audio queue.
-                with open(SIM,"r") as f: s=json.load(f)
-            except: s={}
+        s = pyxis_state.get_state("SIM")
+        s.pop("audio_history", None)
             
-            s.pop("audio_history", None)
+        real_radar = d.get("radar_contacts", [])
+        sim_radar = s.get("radar_contacts", [])
             
-            real_radar = d.get("radar_contacts", [])
-            sim_radar = s.get("radar_contacts", [])
-            
-            import time
-            if s and (time.time() - s.get("last_sim_update", 0) <= 15.0):
-                d.update(s)
-                # Map Headless Sim Boat Coords to Global Pyxis Coords 
-                if not d.get("onboard_mode", False) and d.get("BOAT_LAT", 0.0) != 0.0:
-                    d["lat"] = d["BOAT_LAT"]
-                    d["lon"] = d["BOAT_LON"]
-                    last_known_lat = d["lat"]
-                    last_known_lon = d["lon"]
-                    
-                if real_radar and sim_radar:
-                    d["radar_contacts"] = real_radar + sim_radar
-                elif real_radar:
-                    d["radar_contacts"] = real_radar
-                elif sim_radar:
-                    d["radar_contacts"] = sim_radar
-            else:
-                # Simulator offline -> MOOR PYXIS AUTONOMOUSLY (DECOUPLED FROM WATCH)
-                d["lat"] = last_known_lat
-                d["lon"] = last_known_lon
-                d["radar_contacts"] = real_radar  # STRIP GHOST SIMULATOR RADAR CONTACTS
+        import time
+        if s and (time.time() - s.get("last_sim_update", 0) <= 15.0):
+            d.update(s)
+            # Map Headless Sim Boat Coords to Global Pyxis Coords
+            if not d.get("onboard_mode", False) and d.get("BOAT_LAT", 0.0) != 0.0:
+                d["lat"] = d["BOAT_LAT"]
+                d["lon"] = d["BOAT_LON"]
+                last_known_lat = d["lat"]
+                last_known_lon = d["lon"]
+
+            if real_radar and sim_radar:
+                d["radar_contacts"] = real_radar + sim_radar
+            elif real_radar:
+                d["radar_contacts"] = real_radar
+            elif sim_radar:
+                d["radar_contacts"] = sim_radar
+        else:
+            # Simulator offline -> MOOR PYXIS AUTONOMOUSLY (DECOUPLED FROM WATCH)
+            d["lat"] = last_known_lat
+            d["lon"] = last_known_lon
+            d["radar_contacts"] = real_radar  # STRIP GHOST SIMULATOR RADAR CONTACTS
 
             
         if os.path.exists(GEO_CACHE_FILE):
