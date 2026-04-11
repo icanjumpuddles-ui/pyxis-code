@@ -220,7 +220,7 @@ osm_cache_lock = threading.Lock()
 # --- OSINT INTELLIGENCE CACHE ---
 osint_cache_list = []
 import urllib.request
-def osint_worker():
+def gdacs_worker():
     global osint_cache_list
     while True:
         try:
@@ -255,7 +255,7 @@ def osint_worker():
             pass
         time.sleep(600) # Poll every 10 mins
 
-threading.Thread(target=osint_worker, daemon=True).start()
+threading.Thread(target=gdacs_worker, daemon=True).start()
 
 def osm_worker():
     """
@@ -1433,6 +1433,7 @@ def system_status():
         return jsonify({"error": str(e)}), 500
 
 live_ais_cache = {}
+live_ais_lock = threading.Lock()
 
 def aisstream_worker():
     """
@@ -1498,26 +1499,27 @@ def aisstream_worker():
                                 
                                 # Distance calculation relative to Pyxis
                                 d_lat, d_lon = (lat - last_known_lat) * 111320.0, (lon - last_known_lon) * 111320.0 * math.cos(math.radians(last_known_lat))
-                                dist_m = math.sqrt(d_lat**2 + d_lon**2) if d_lat and d_lon else 0
-                                bear = math.degrees(math.atan2(d_lon, d_lat)) if d_lat and d_lon else 0
+                                dist_m = math.sqrt(d_lat**2 + d_lon**2)
+                                bear = math.degrees(math.atan2(d_lon, d_lat)) if (d_lat != 0 or d_lon != 0) else 0
                                 bearing = bear if bear >= 0 else bear + 360.0
                                 
-                                live_ais_cache[mmsi] = {
-                                    "id": mmsi,
-                                    "mmsi": mmsi,
-                                    "name": name,
-                                    "destination": destination,
-                                    "callsign": callsign,
-                                    "imo": imo,
-                                    "type": "MERCHANT",
-                                    "lat": lat,
-                                    "lon": lon,
-                                    "range_nm": round(dist_m / 1852.0, 2),
-                                    "bearing": round(bearing, 1),
-                                    "heading": cog,
-                                    "speed": sog,
-                                    "ts": time.time()
-                                }
+                                with live_ais_lock:
+                                    live_ais_cache[mmsi] = {
+                                        "id": mmsi,
+                                        "mmsi": mmsi,
+                                        "name": name,
+                                        "destination": destination,
+                                        "callsign": callsign,
+                                        "imo": imo,
+                                        "type": "MERCHANT",
+                                        "lat": lat,
+                                        "lon": lon,
+                                        "range_nm": round(dist_m / 1852.0, 2),
+                                        "bearing": round(bearing, 1),
+                                        "heading": cog,
+                                        "speed": sog,
+                                        "ts": time.time()
+                                    }
                                 
                         elif msg_type == "ShipStaticData":
                             sd = data.get("Message", {}).get("ShipStaticData", {})
@@ -1529,15 +1531,16 @@ def aisstream_worker():
                                 callsign = sd.get("CallSign", "").strip()
                                 imo = str(sd.get("ImoNumber", "") or "")
                                 shiptype = int(sd.get("ShipType", 0) or 0)
-                                if mmsi in live_ais_cache:
-                                    live_ais_cache[mmsi]["name"] = name
-                                    live_ais_cache[mmsi]["mmsi"] = mmsi
-                                    live_ais_cache[mmsi]["destination"] = destination
-                                    live_ais_cache[mmsi]["callsign"] = callsign
-                                    live_ais_cache[mmsi]["imo"] = imo
-                                    live_ais_cache[mmsi]["shiptype"] = shiptype
-                                else:
-                                    live_ais_cache[mmsi] = {"name": name, "mmsi": mmsi, "destination": destination, "callsign": callsign, "imo": imo, "shiptype": shiptype, "ts": time.time()}
+                                with live_ais_lock:
+                                    if mmsi in live_ais_cache:
+                                        live_ais_cache[mmsi]["name"] = name
+                                        live_ais_cache[mmsi]["mmsi"] = mmsi
+                                        live_ais_cache[mmsi]["destination"] = destination
+                                        live_ais_cache[mmsi]["callsign"] = callsign
+                                        live_ais_cache[mmsi]["imo"] = imo
+                                        live_ais_cache[mmsi]["shiptype"] = shiptype
+                                    else:
+                                        live_ais_cache[mmsi] = {"name": name, "mmsi": mmsi, "destination": destination, "callsign": callsign, "imo": imo, "shiptype": shiptype, "ts": time.time()}
             except Exception as e:
                 log(f"AisStream Connection Dropped: {e}, reconnecting in 5s...")
                 await asyncio.sleep(5)
@@ -1555,19 +1558,20 @@ def get_active_ais_list(ref_lat=None, ref_lon=None):
     """
     # Purge AIS contacts older than 10 minutes (600 seconds)
     now = time.time()
-    active_mmsi = [k for k, v in live_ais_cache.items() if (now - v.get("ts", 0)) < 600]
-    for key in list(live_ais_cache.keys()):
-        if key not in active_mmsi:
-            del live_ais_cache[key]
-            
-    # Return formatted list, filtering out ones without full location data
-    raw_contacts = []
-    for _k, _v in live_ais_cache.items():
-        if "lat" in _v:
-            _c = dict(_v)
-            if not _c.get("mmsi"): _c["mmsi"] = str(_k)   # ensure mmsi field is present
-            if not _c.get("id"):   _c["id"]   = str(_k)   # watch uses id for ContactActionsMenu
-            raw_contacts.append(_c)
+    with live_ais_lock:
+        active_mmsi = [k for k, v in live_ais_cache.items() if (now - v.get("ts", 0)) < 600]
+        for key in list(live_ais_cache.keys()):
+            if key not in active_mmsi:
+                del live_ais_cache[key]
+
+        # Return formatted list, filtering out ones without full location data
+        raw_contacts = []
+        for _k, _v in live_ais_cache.items():
+            if "lat" in _v:
+                _c = dict(_v)
+                if not _c.get("mmsi"): _c["mmsi"] = str(_k)   # ensure mmsi field is present
+                if not _c.get("id"):   _c["id"]   = str(_k)   # watch uses id for ContactActionsMenu
+                raw_contacts.append(_c)
     
     # Apply vessel classification to live AIS contacts
     contacts = []
@@ -3135,61 +3139,7 @@ _="""    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leafl
         }
         initMap();
 
-        async function tick() {
-            try {
-                const r = await fetch('/status_api?bust=' + Date.now());
-                const d = await r.json();
-                
-                let pLat = d.lat || 0;
-                let pLon = d.lon || 0;
-                pyxisMarker.setLatLng([pLat, pLon]);
-                
-                let wLat = d.CREW_LAT || 0;
-                let wLon = d.CREW_LON || 0;
-                if (wLat !== 0) {
-                    watchMarker.setLatLng([wLat, wLon]);
-                    watchMarker.setRadius(8);
-                } else {
-                    watchMarker.setRadius(0);
-                }
-                
-                // Resolve the 'Singapore lock'
-                if (!isInitialized && (pLat !== 0 || wLat !== 0)) {
-                    let group = new L.featureGroup([pyxisMarker, watchMarker]);
-                    if(wLat === 0) group = new L.featureGroup([pyxisMarker]);
-                    map.fitBounds(group.getBounds().pad(0.5), {maxZoom: 14});
-                    isInitialized = true;
-                }
-                
-                // Resolve AUDIO History Inbox overlays
-                let htm = "";
-                if(d.audio_history) {
-                    [...d.audio_history].reverse().forEach(a => {
-                        let btnText = "PLAY INTEL";
-                        if (a.type === "day_brief") btnText = "PLAY MORNING BRIEFING";
-                        if (a.type === "night_brief") btnText = "PLAY EVENING BRIEFING";
-                        let btnHtml = a.ready === false ? `<button class="play-btn" style="color:#ff0;" disabled>GENERATING AUDIO...</button>` : `<button class="play-btn" onclick="playId('${a.id}')">${btnText}</button>`;
-                        let headerTag = a.type === "day_brief" ? "MORNING BRIEFING" : a.type === "night_brief" ? "EVENING BRIEFING" : "Report " + a.id.toString().substring(0,8) + "... (" + a.type + ")";
-                        let txtHtml = a.text ? `<div style="font-size: 11px; margin-top: 5px; color: #8f8;">${a.text}</div>` : '';
-                        htm += `<div class="play-row" style="flex-direction: column; align-items: flex-start;">
-                            <div style="display:flex; justify-content:space-between; width:100%; align-items:center;">
-                                <span style="font-weight:bold; color:#0f0;">${headerTag}</span>
-                                ${btnHtml}
-                            </div>
-                            ${txtHtml}
-                        </div>`;
-                    });
-                }
-                document.getElementById('audioList').innerHTML = htm || "No radio history.";
 
-            } catch(e) { console.error("API Fetch Error", e); }
-        }
-        setInterval(tick, 3000);
-        tick();
-    </script>
-</body>
-</html>
-"""
 
 @app.route('/verbose')
 def player():
@@ -3637,56 +3587,7 @@ _="""
                 map.panTo([d.lat, d.lon]);
                 if(curStatId == 0) map.setZoom(13);
 
-                if(newStat != curStatId && newStat != 0) { curStatId = newStat; }
-                if(newSys != curSysId && newSys != 0) { curSysId = newSys; }
 
-                // Audio Queue Logic: Auto-play any unplayed reports as long as Arm is on
-                if(d.force_replay && playedIds.has(d.force_replay)) {
-                    playedIds.delete(d.force_replay); // Forcing replay by clearing cache ID
-                }
-                
-                if(d.audio_history && d.audio_history.length > 0) {
-                    d.audio_history.forEach(item => {
-                        if(item.ready !== false && !playedIds.has(item.id)) {
-                            playedIds.add(item.id);
-                            audioQueue.push(item);
-                        }
-                    });
-                    if (!isPlaying && isArmed) {
-                        playNextInQueue();
-                    }
-                }
-
-                const hr = await fetch('/history_api'), h = await hr.json();
-                if(showTrack) { trackPolyline.setLatLngs(h); }
-            } catch(e) { console.error("Update error:", e); }
-        }
-        setInterval(up, 3000);
-
-        let playedIds = new Set();
-        let audioQueue = [];
-        let isPlaying = false;
-
-        function playNextInQueue() {
-            if(isPlaying || audioQueue.length === 0) return;
-            isPlaying = true;
-            let item = audioQueue.shift();
-            let a = document.getElementById('audio');
-            a.src = '/audio?id=' + item.id + '&bust=' + Date.now();
-            a.load();
-            a.play().then(() => {
-                document.getElementById('wea').innerText = "PLAYING: " + item.type.toUpperCase();
-            }).catch(e => { 
-                console.log("Play err", e); 
-                isPlaying=false; 
-                setTimeout(playNextInQueue, 500); 
-            });
-            a.onended = () => { isPlaying = false; setTimeout(playNextInQueue, 1000); };
-        }
-    </script>
-</body>
-</html>
-"""
 
 @app.route('/history_api')
 def hi_api():
