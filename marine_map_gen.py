@@ -74,6 +74,16 @@ import os, sys, json, time, math, colorsys, shutil
 import urllib.request, io
 import requests
 
+def _nm_distance(lat1, lon1, lat2, lon2):
+    R = 3440.065 # Radius of earth in nautical miles
+    dLat = math.radians(lat2 - lat1)
+    dLon = math.radians(lon2 - lon1)
+    a = math.sin(dLat/2) * math.sin(dLat/2) + \
+        math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * \
+        math.sin(dLon/2) * math.sin(dLon/2)
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+    return R * c
+
 # --- Config ---
 VERSION     = "v2.2"
 B           = os.environ.get("B", "/home/icanjumpuddles/manta-comms")
